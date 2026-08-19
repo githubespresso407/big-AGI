@@ -58,6 +58,7 @@ export const googleSearchRouter = createTRPCRouter({
           headers: {
             'Accept': 'application/json',
             'Accept-Encoding': 'gzip',
+            'Content-Type': 'application/json', // required: the fetcher stringifies the body but does not set this
             'x-api-key': exaKey,
             'User-Agent': 'Big-AGI (gzip)',
           },
