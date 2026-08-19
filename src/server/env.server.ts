@@ -118,6 +118,7 @@ export const env = createEnv({
 
     // [Jina patch] Jina AI Reader/Search (r.jina.ai / s.jina.ai)
     JINA_API_KEY: z.string().optional(),
+    EXA_API_KEY: z.string().optional(), // [Exa patch]
 
 
     // Text-To-Speech: ElevenLabs - speech.ts
