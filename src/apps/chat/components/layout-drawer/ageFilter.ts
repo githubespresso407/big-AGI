@@ -1,11 +1,11 @@
 // [Age filter patch] pure logic for the drawer "Older than" filter - import-free for tsx --test
 
-export const AGE_FILTER_OPTIONS: { days: number | null; label: string }[] = [
-  { days: null, label: 'Any age' },
-  { days: 7, label: 'Older than 1 week' },
-  { days: 14, label: 'Older than 2 weeks' },
-  { days: 30, label: 'Older than 1 month' },
-  { days: 90, label: 'Older than 3 months' },
+export const AGE_FILTER_OPTIONS: { days: number | null; label: string; shortLabel: string }[] = [
+  { days: null, label: 'Any age', shortLabel: 'Any' },
+  { days: 7, label: 'Older than 1 week', shortLabel: '>1w' },
+  { days: 14, label: 'Older than 2 weeks', shortLabel: '>2w' },
+  { days: 30, label: 'Older than 1 month', shortLabel: '>1m' },
+  { days: 90, label: 'Older than 3 months', shortLabel: '>3m' },
 ];
 
 /**

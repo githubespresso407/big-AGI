@@ -250,17 +250,24 @@ function ChatDrawer(props: {
             Beam Open <ChatBeamIcon />
           </MenuItem>
 
-          {/* [Age filter patch] */}
+          {/* [Age filter patch] compact chip row (mobile-friendly) */}
           <ListDivider />
-          <ListItem>
-            <Typography level='body-sm'>Age</Typography>
+          <ListItem sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
+            <Typography level='body-sm' sx={{ mr: 0.5 }}>Age</Typography>
+            {AGE_FILTER_OPTIONS.map(({ days, label, shortLabel }) => (
+              <Button
+                key={label}
+                aria-label={label}
+                size='sm'
+                variant={filterOlderThanDays === days ? 'solid' : 'soft'}
+                color={filterOlderThanDays === days ? 'primary' : 'neutral'}
+                onClick={() => setFilterOlderThanDays(days)}
+                sx={{ minHeight: 0, px: 1, fontSize: 'xs', borderRadius: 'sm' }}
+              >
+                {shortLabel}
+              </Button>
+            ))}
           </ListItem>
-          {AGE_FILTER_OPTIONS.map(({ days, label }) => (
-            <MenuItem key={label} selected={filterOlderThanDays === days} onClick={() => setFilterOlderThanDays(days)}>
-              <ListItemDecorator>{filterOlderThanDays === days && <CheckRoundedIcon />}</ListItemDecorator>
-              {label}
-            </MenuItem>
-          ))}
 
           <ListDivider />
           <ListItem>
