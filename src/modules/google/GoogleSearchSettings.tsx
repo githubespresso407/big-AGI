@@ -7,6 +7,7 @@ import SearchIcon from '@mui/icons-material/Search';
 
 import { getBackendCapabilities } from '~/modules/backend/store-backend-capabilities';
 import { isValidJinaApiKey, useJinaStore } from '~/modules/jina/store-module-jina';
+import { isValidExaApiKey, useExaStore } from '~/modules/exa/store-module-exa'; // [Exa patch]
 
 import { ExternalLink } from '~/common/components/ExternalLink';
 import { FormInputKey } from '~/common/components/forms/FormInputKey';
@@ -40,7 +41,12 @@ export function GoogleSearchSettings() {
   const isValidKey = googleCloudApiKey ? isValidGoogleCloudApiKey(googleCloudApiKey) : backendHasGoogle;
   const isValidId = googleCSEId ? isValidGoogleCseId(googleCSEId) : backendHasGoogle;
   const isJinaValid = isValidJinaApiKey(jinaApiKey); // [Jina patch] valid Jina key substitutes for Google PSE
-  const googleSatisfied = (isValidKey && isValidId) || isJinaValid;
+  const { exaApiKey, setExaApiKey } = useExaStore(useShallow(state => ({ // [Exa patch]
+    exaApiKey: state.exaApiKey,
+    setExaApiKey: state.setExaApiKey,
+  })));
+  const isExaValid = isValidExaApiKey(exaApiKey); // [Exa patch] valid Exa key is preferred over Jina for search
+  const googleSatisfied = (isValidKey && isValidId) || isExaValid || isJinaValid;
 
 
   const handleGoogleApiKeyChange = (e: React.ChangeEvent<HTMLInputElement>) => setGoogleCloudApiKey(e.target.value);
@@ -65,12 +71,21 @@ export function GoogleSearchSettings() {
       placeholder='jina_...'
     />
 
+    {/* [Exa patch] Exa Search key - preferred over Jina when set (Jina stays the browse/reader backend) */}
+    <FormInputKey
+      autoCompleteId='exa-key' label='Exa API Key'
+      description={<>Neural web search - get one at <Link href='https://exa.ai' noLinkStyle target='_blank'>exa.ai</Link></>}
+      value={exaApiKey} onChange={setExaApiKey}
+      required={false} isError={!!exaApiKey && !isExaValid}
+      placeholder='00000000-0000-...'
+    />
+
     <FormControl orientation='horizontal' sx={{ justifyContent: 'space-between', alignItems: 'center' }}>
       <FormLabelStart title='GCP API Key'
                       description={<>Create one <Link href='https://console.cloud.google.com/apis/credentials' noLinkStyle target='_blank'>here</Link></>}
                       tooltip='Create your Google Cloud "API Key Credential" and enter it here' />
       <Input
-        variant='outlined' placeholder={backendHasGoogle ? '...' : (isJinaValid ? 'unused (Jina)' : 'missing')} error={!googleSatisfied && !isValidKey}
+        variant='outlined' placeholder={backendHasGoogle ? '...' : (isExaValid ? 'unused (Exa)' : isJinaValid ? 'unused (Jina)' : 'missing')} error={!googleSatisfied && !isValidKey}
         value={googleCloudApiKey} onChange={handleGoogleApiKeyChange}
         startDecorator={<KeyIcon />}
         slotProps={{ input: { sx: { width: '100%' } } }}
@@ -83,7 +98,7 @@ export function GoogleSearchSettings() {
                       description={<>Get it <Link href='https://programmablesearchengine.google.com/' noLinkStyle target='_blank'>here</Link></>}
                       tooltip='Create your Google "Programmable Search Engine" and enter its ID here' />
       <Input
-        variant='outlined' placeholder={backendHasGoogle ? '...' : (isJinaValid ? 'unused (Jina)' : 'missing')} error={!googleSatisfied && !isValidId}
+        variant='outlined' placeholder={backendHasGoogle ? '...' : (isExaValid ? 'unused (Exa)' : isJinaValid ? 'unused (Jina)' : 'missing')} error={!googleSatisfied && !isValidId}
         value={googleCSEId} onChange={handleCseIdChange}
         startDecorator={<SearchIcon />}
         slotProps={{ input: { sx: { width: '100%' } } }}

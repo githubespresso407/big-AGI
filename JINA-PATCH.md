@@ -4,6 +4,15 @@ This fork adds Jina AI as a backend for the **Browse** and **Search** tools,
 on top of upstream `enricoros/big-AGI`. All changes are marked with
 `[Jina patch]` comments.
 
+> **Also in this fork:** the `[Exa patch]` adds Exa (api.exa.ai) as the
+> preferred Search provider when Google PSE is missing (precedence:
+> Google -> Exa -> Jina). Jina remains the browse/reader backend.
+> Files: `src/modules/exa/*`, provider branch in `google/search.router.ts`,
+> routing in `google/search.client.ts`, key field in
+> `google/GoogleSearchSettings.tsx`, `EXA_API_KEY` in `env.server.ts`.
+> Client keys: `app-module-exa` zustand store; env: `EXA_API_KEY`.
+> Restore point before this patch: tag `pre-exa-restore`.
+
 ## What it does
 
 - **Browse**: new `browse-jina` dialect in `browse.router.ts` fetches pages via

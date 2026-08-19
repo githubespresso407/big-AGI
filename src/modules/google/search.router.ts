@@ -7,6 +7,8 @@ import { fetchJsonOrTRPCThrow } from '~/server/trpc/trpc.router.fetchers';
 
 import type { Search } from './search.types';
 import { VERTEX_GROUNDING_REDIRECT_PREFIX } from './vertexai.types';
+import { EXA_SEARCH_ENDPOINT, exaBuildSearchRequest, exaMapSearchResponse } from '~/modules/exa/exa-search'; // [Exa patch]
+import type { ExaWireResponse } from '~/modules/exa/exa-search'; // [Exa patch]
 
 
 // configuration (Vertex AI grounding links)
@@ -23,10 +25,11 @@ export const googleSearchRouter = createTRPCRouter({
     .input(z.object({
       query: z.string(),
       items: z.number(),
-      provider: z.enum(['google', 'jina']).optional(), // [Jina patch] defaults to google for backwards compatibility
+      provider: z.enum(['google', 'jina', 'exa']).optional(), // [Jina patch]/[Exa patch] defaults to google for backwards compatibility
       key: z.string().optional(), // could be server-set
       cx: z.string().optional(), // could be server-set
       jinaKey: z.string().optional(), // [Jina patch] could be server-set (JINA_API_KEY)
+      exaKey: z.string().optional(), // [Exa patch] could be server-set (EXA_API_KEY)
       restrictToDomain: z.string().nullable(),
     }))
     .query(async ({ input }): Promise<{ pages: Search.API.BriefResult[] }> => {
@@ -36,7 +39,39 @@ export const googleSearchRouter = createTRPCRouter({
       const googleKey = (input.key || env.GOOGLE_CLOUD_API_KEY || '').trim();
       const googleCx = (input.cx || env.GOOGLE_CSE_ID || '').trim();
       const jinaKey = (input.jinaKey || env.JINA_API_KEY || '').trim();
-      const useJina = input.provider === 'jina' || ((!googleKey || !googleCx) && !!jinaKey);
+      // [Exa patch] precedence when Google PSE is missing: Exa first, then Jina
+      const exaKey = (input.exaKey || env.EXA_API_KEY || '').trim();
+      const hasGoogle = !!googleKey && !!googleCx;
+      const useExa = input.provider === 'exa' || (!hasGoogle && !!exaKey);
+      const useJina = !useExa && (input.provider === 'jina' || (!hasGoogle && !!jinaKey));
+
+      // [Exa patch] Exa Search (api.exa.ai)
+      if (useExa) {
+        if (!exaKey)
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Missing Exa API Key (api.exa.ai requires one)' });
+
+        const data = await fetchJsonOrTRPCThrow<ExaWireResponse, object>({
+          url: EXA_SEARCH_ENDPOINT,
+          name: 'Exa Search',
+          method: 'POST',
+          body: exaBuildSearchRequest(input.query, input.items, input.restrictToDomain),
+          headers: {
+            'Accept': 'application/json',
+            'Accept-Encoding': 'gzip',
+            'x-api-key': exaKey,
+            'User-Agent': 'Big-AGI (gzip)',
+          },
+        });
+
+        const pages = exaMapSearchResponse(data, input.items);
+        if (!pages)
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: `Exa Search API error: ${data.error || 'unknown error'}`,
+          });
+
+        return { pages };
+      }
 
       if (useJina) {
         if (!jinaKey)

@@ -1,6 +1,7 @@
 import { apiAsync } from '~/common/util/trpc.client';
 
 import { isValidJinaApiKey, useJinaStore } from '~/modules/jina/store-module-jina';
+import { isValidExaApiKey, useExaStore } from '~/modules/exa/store-module-exa'; // [Exa patch]
 
 import { Search } from './search.types';
 import { useGoogleSearchStore } from './store-module-google';
@@ -18,21 +19,25 @@ export async function callApiSearchGoogle(query: string, items: number, restrict
   // get the keys (empty if they're on server)
   const { googleCloudApiKey, googleCSEId, restrictToDomain: defaultRestrictToDomain } = useGoogleSearchStore.getState();
   const { jinaApiKey } = useJinaStore.getState();
+  const { exaApiKey } = useExaStore.getState(); // [Exa patch]
 
-  // [Jina patch] use Jina Search when Google PSE isn't configured client-side but a Jina key is;
-  // when both are empty the server decides (env fallback: Google first, then JINA_API_KEY)
+  // [Jina patch]/[Exa patch] route to Exa/Jina Search when Google PSE isn't configured client-side;
+  // when no client keys are set, the server decides (env fallback: Google -> EXA_API_KEY -> JINA_API_KEY).
+  // Note: a client-set Jina key no longer forces 'jina' - it's passed along and the server applies the
+  // same precedence, so a server-side EXA_API_KEY still wins for search.
   const hasGoogle = isValidGoogleCloudApiKey(googleCloudApiKey) && isValidGoogleCseId(googleCSEId);
-  const hasJina = isValidJinaApiKey(jinaApiKey);
-  const useJina = !hasGoogle && hasJina;
+  const hasExa = isValidExaApiKey(exaApiKey);
+  const provider = hasGoogle ? 'google' : hasExa ? 'exa' : 'google';
 
   try {
     return await apiAsync.googleSearch.search.query({
       query,
       items,
-      provider: useJina ? 'jina' : 'google',
+      provider,
       key: googleCloudApiKey,
       cx: googleCSEId,
-      ...(useJina && { jinaKey: jinaApiKey.trim() }),
+      ...(!!jinaApiKey.trim() && { jinaKey: jinaApiKey.trim() }),
+      ...(hasExa && { exaKey: exaApiKey.trim() }),
       restrictToDomain: restrictToDomain || defaultRestrictToDomain || null,
     });
   } catch (error: any) {
