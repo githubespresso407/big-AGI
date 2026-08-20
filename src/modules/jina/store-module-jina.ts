@@ -8,14 +8,17 @@ import { persist } from 'zustand/middleware';
  * the Search module (jina provider). Server-side equivalent: JINA_API_KEY env.
  */
 
+// [Jina patch] auto-search mode: 'off' | 'auto' (an LLM gate decides per message and rewrites the query) | 'always' (every message)
+export type AutoSearchMode = 'off' | 'auto' | 'always';
+
 interface ModuleJinaStore {
 
   jinaApiKey: string;
-  setJinaApiKey: (key: string) => void;
+  setJinaApiKey: (apiKey: string) => void;
 
   // [Jina patch] auto-search: augment outgoing chat messages with web results
-  autoSearchEnabled: boolean;
-  setAutoSearchEnabled: (value: boolean) => void;
+  autoSearchMode: AutoSearchMode;
+  setAutoSearchMode: (mode: AutoSearchMode) => void;
 
 }
 
@@ -26,12 +29,21 @@ export const useJinaStore = create<ModuleJinaStore>()(
       jinaApiKey: '',
       setJinaApiKey: (jinaApiKey: string) => set({ jinaApiKey }),
 
-      autoSearchEnabled: false,
-      setAutoSearchEnabled: (autoSearchEnabled: boolean) => set({ autoSearchEnabled }),
+      autoSearchMode: 'off',
+      setAutoSearchMode: (autoSearchMode: AutoSearchMode) => set({ autoSearchMode }),
 
     }),
     {
       name: 'app-module-jina',
+      version: 1,
+      migrate: (persistedState: any, version: number) => {
+        // v0 -> v1: autoSearchEnabled (boolean) -> autoSearchMode ('always' preserved the old behavior)
+        if (version === 0 && persistedState && typeof persistedState === 'object') {
+          persistedState.autoSearchMode = persistedState.autoSearchEnabled ? 'always' : 'off';
+          delete persistedState.autoSearchEnabled;
+        }
+        return persistedState;
+      },
     },
   ),
 );

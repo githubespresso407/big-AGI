@@ -6,7 +6,7 @@
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { buildSearchQuery, cleanFetchedMarkdown } from './autosearch.query';
+import { buildSearchGatePrompts, buildSearchQuery, cleanFetchedMarkdown, parseSearchGateResponse } from './autosearch.query';
 
 
 describe('buildSearchQuery', () => {
@@ -62,6 +62,82 @@ describe('buildSearchQuery', () => {
       buildSearchQuery('please look up CNSC exam dates', []),
       'CNSC exam dates',
     );
+  });
+
+});
+
+describe('buildSearchGatePrompts', () => {
+
+  const turns = [
+    { role: 'user' as const, text: 'tell me about Dune Part Three' },
+    { role: 'assistant' as const, text: 'Dune Part Three is the upcoming...' },
+  ];
+
+  it('offers NO_SEARCH in auto mode and embeds the transcript and latest message', () => {
+    const { system, user } = buildSearchGatePrompts(turns, 'when will it be released?', false);
+    assert.ok(system.length > 0);
+    assert.match(user, /NO_SEARCH/);
+    assert.match(user, /SEARCH: <query>/);
+    assert.match(user, /User: tell me about Dune Part Three/);
+    assert.match(user, /Assistant: Dune Part Three is the upcoming\.\.\./);
+    assert.match(user, /Latest user message:\nwhen will it be released\?/);
+  });
+
+  it('removes the NO_SEARCH option in force mode', () => {
+    const { user } = buildSearchGatePrompts(turns, 'when will it be released?', true);
+    assert.ok(!/NO_SEARCH/.test(user));
+    assert.match(user, /SEARCH: <query>/);
+  });
+
+  it('handles empty history', () => {
+    const { user } = buildSearchGatePrompts([], 'weather in Tokyo', false);
+    assert.match(user, /\(no prior messages\)/);
+  });
+
+});
+
+describe('parseSearchGateResponse', () => {
+
+  it('parses NO_SEARCH in auto mode', () => {
+    assert.deepStrictEqual(parseSearchGateResponse('NO_SEARCH', false), { search: false });
+    assert.deepStrictEqual(parseSearchGateResponse('no search', false), { search: false });
+  });
+
+  it('parses NO_SEARCH even in force mode (model refused)', () => {
+    assert.deepStrictEqual(parseSearchGateResponse('NO_SEARCH', true), { search: false });
+  });
+
+  it('parses SEARCH with a standalone rewritten query', () => {
+    assert.deepStrictEqual(
+      parseSearchGateResponse('SEARCH: Dune Part Three release date', false),
+      { search: true, query: 'Dune Part Three release date' },
+    );
+  });
+
+  it('strips quote wrapping around the query', () => {
+    assert.deepStrictEqual(
+      parseSearchGateResponse('SEARCH: "Dune Part Three release date"', false),
+      { search: true, query: 'Dune Part Three release date' },
+    );
+  });
+
+  it('returns a null query when SEARCH has no query text', () => {
+    assert.deepStrictEqual(parseSearchGateResponse('SEARCH:', false), { search: true, query: null });
+  });
+
+  it('treats unrecognized output as no-search in auto mode', () => {
+    assert.deepStrictEqual(parseSearchGateResponse('It will be released in 2026.', false), { search: false });
+    assert.deepStrictEqual(parseSearchGateResponse('', false), { search: false });
+  });
+
+  it('treats unrecognized output as search-with-heuristic in force mode', () => {
+    assert.deepStrictEqual(parseSearchGateResponse('hmm let me think', true), { search: true, query: null });
+    assert.deepStrictEqual(parseSearchGateResponse('', true), { search: true, query: null });
+  });
+
+  it('caps the parsed query length', () => {
+    const decision = parseSearchGateResponse('SEARCH: ' + 'x'.repeat(400), false);
+    assert.ok(decision.search && decision.query && decision.query.length <= 280);
   });
 
 });

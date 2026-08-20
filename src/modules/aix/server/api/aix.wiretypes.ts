@@ -606,6 +606,7 @@ export namespace AixWire_API {
       'chat-followup-diagram',
       'chat-followup-htmlui',
       'chat-react-turn',
+      'chat-search-gate',         // [Jina patch] auto-search gate: decide + rewrite query
       'draw-expand-prompt',
       'fixup-code',
 
