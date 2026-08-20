@@ -31,7 +31,7 @@ import { buildSearchGatePrompts, buildSearchQuery, cleanFetchedMarkdown, parseSe
  */
 
 // configuration
-const AUTOSEARCH_RESULT_COUNT = 3;
+const AUTOSEARCH_RESULT_COUNT = 5;
 const AUTOSEARCH_PAGE_MAX_CHARS = 3500; // generous: nav clutter is stripped first, and data often sits deep in the page
 const GATE_HISTORY_TURNS = 6;
 const GATE_TURN_MAX_CHARS = 400;
