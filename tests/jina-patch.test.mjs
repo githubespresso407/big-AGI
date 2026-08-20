@@ -49,6 +49,15 @@ check('autosearch: fails open (returns userText on error)', autosearch.includes(
 const queryBuilder = readFileSync(join(root, 'src/modules/jina/autosearch.query.ts'), 'utf8');
 check('autosearch: follow-up folding present', queryBuilder.includes('looksLikeFollowup'));
 
+// search gate wiring (LLM decides + rewrites the query)
+check('gate: prompt builder and parser present', queryBuilder.includes('buildSearchGatePrompts') && queryBuilder.includes('parseSearchGateResponse'));
+check('gate: autosearch calls the gate via fastUtil', autosearch.includes("getDomainModelIdOrThrow(['fastUtil']") && autosearch.includes('chat-search-gate'));
+check('gate: heuristic fallback kept', autosearch.includes('buildSearchQuery'));
+const jinaStore = readFileSync(join(root, 'src/modules/jina/store-module-jina.ts'), 'utf8');
+check('gate: 3-state mode store with migration', jinaStore.includes('AutoSearchMode') && jinaStore.includes('migrate'));
+const aixWire = readFileSync(join(root, 'src/modules/aix/server/api/aix.wiretypes.ts'), 'utf8');
+check('gate: chat-search-gate context registered', aixWire.includes('chat-search-gate'));
+
 // --- 2/3. live r.jina.ai check (mirrors workerJina in browse.router.ts) ---
 async function workerJina(targetUrl, transforms, apiKey) {
   const result = { url: targetUrl, title: '', content: undefined, error: undefined, stopReason: 'error' };

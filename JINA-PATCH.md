@@ -29,20 +29,29 @@ on top of upstream `enricoros/big-AGI`. All changes are marked with
   all browsers/devices without entering keys in the UI. Backend capabilities
   (`hasBrowsing`, `hasGoogleCustomSearch`) reflect it.
 - **Auto-search** (2nd commit): composer "Web" toggle + Search-settings
-  checkbox (`autoSearchEnabled` in the same store). When ON, outgoing chat
-  messages are augmented: Jina search -> top 3 pages via Jina Reader ->
-  `<web_search_results>` context block prepended to the user text. Follow-up
-  messages fold the previous user message into the query
-  (`src/modules/jina/autosearch.query.ts`, unit-tested in
-  `src/modules/jina/autosearch.test.ts`). Skips image-generation and /react;
+  control (`autoSearchMode` in the same store: `off | auto | always`,
+  migrated from the old boolean). When not OFF, outgoing chat messages can be
+  augmented: search -> top 3 pages via Jina Reader -> `<web_search_results>`
+  context block prepended to the user text. Skips image-generation and /react;
   fails open (sends the original text if search errors).
+- **Search gate** (2026-08, on top of auto-search): a fast LLM
+  (`fastUtil` domain, same as auto-title) sees the last 6 turns and (a) in
+  `auto` mode decides whether a search is needed at all (`NO_SEARCH` vs
+  `SEARCH: <query>`), (b) in both modes rewrites follow-ups into standalone
+  queries ("when will it be released?" -> "Dune Part Three release date").
+  Pure logic in `autosearch.query.ts` (`buildSearchGatePrompts` /
+  `parseSearchGateResponse`, unit-tested); runtime in `autosearch.ts`.
+  New aix context `chat-search-gate` in `aix.wiretypes.ts`. If the gate model
+  is missing or errors, falls back to the heuristic follow-up folding and
+  searches anyway. Restore point: tag `pre-search-gate-restore`.
 
 ## Files touched
 
-- `src/modules/jina/store-module-jina.ts` (new)
+- `src/modules/jina/store-module-jina.ts` (new; v1: `autoSearchMode` replaces `autoSearchEnabled`)
 - `src/modules/jina/autosearch.ts` / `autosearch.query.ts` / `autosearch.test.ts` (new)
 - `src/apps/chat/components/composer/Composer.tsx` (send-path hook + toggle)
-- `src/apps/chat/components/composer/buttons/ButtonAutoSearch.tsx` (new)
+- `src/apps/chat/components/composer/buttons/ButtonAutoSearch.tsx` (new; 3-state cycle)
+- `src/modules/aix/server/api/aix.wiretypes.ts` (`chat-search-gate` context)
 - `src/server/env.server.ts` (`JINA_API_KEY`)
 - `src/modules/backend/backend.router.ts` (capabilities)
 - `src/modules/browse/{browse.router.ts,browse.client.ts,store-module-browsing.tsx,BrowseSettings.tsx}`
