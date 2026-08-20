@@ -34,7 +34,7 @@ import { copyToClipboard, supportsClipboardRead } from '~/common/util/clipboardU
 import { createTextContentFragment, DMessageAttachmentFragment, DMessageContentFragment, duplicateDMessageFragments } from '~/common/stores/chat/chat.fragments';
 import { glueForMessageTokens, marshallWrapDocFragments } from '~/common/stores/chat/chat.tokens';
 import { isValidConversation, useChatStore } from '~/common/stores/chat/store-chats';
-import { augmentTextWithWebSearch, extractPreviousUserTexts } from '~/modules/jina/autosearch';
+import { augmentTextWithWebSearch } from '~/modules/jina/autosearch';
 import { getModelParameterValueWithFallback } from '~/common/stores/llms/llms.parameters';
 import { launchAppCall, removeQueryParam, useRouterQuery } from '~/common/app.routes';
 import { lineHeightTextareaMd, themeBgAppChatComposer } from '~/common/app.theme';
@@ -307,13 +307,12 @@ export function Composer(props: {
     // prepare the fragments: content (if any) and attachments (if allowed, and any)
     const fragments: (DMessageContentFragment | DMessageAttachmentFragment)[] = [];
 
-    // [Jina patch] auto web search: augment the outgoing text with fresh results (plain-chat tool use;
-    // skipped for image generation and ReAct, which has its own tools)
+    // [Jina patch] auto web search: a gate may augment the outgoing text with fresh results
+    // (plain-chat tool use; skipped for image generation and ReAct, which has its own tools)
     let outgoingText = composerText;
     if (composerText && _chatExecuteMode !== 'generate-image' && _chatExecuteMode !== 'react-content') {
       const priorMessages = useChatStore.getState().conversations.find(_c => _c.id === targetConversationId)?.messages || [];
-      const previousUserTexts = extractPreviousUserTexts(priorMessages, 2);
-      outgoingText = await augmentTextWithWebSearch(composerText, previousUserTexts, (message) =>
+      outgoingText = await augmentTextWithWebSearch(composerText, priorMessages, targetConversationId, (message) =>
         addSnackbar({ key: 'auto-web-search', message, type: 'info' }));
     }
 

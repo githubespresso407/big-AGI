@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
-import { FormControl, FormHelperText, Input, Typography, Checkbox } from '@mui/joy';
+import { FormControl, FormHelperText, Input, Option, Select, Typography } from '@mui/joy';
 import KeyIcon from '@mui/icons-material/Key';
 import SearchIcon from '@mui/icons-material/Search';
 
@@ -31,9 +31,9 @@ export function GoogleSearchSettings() {
     jinaApiKey: state.jinaApiKey,
     setJinaApiKey: state.setJinaApiKey,
   })));
-  const { autoSearchEnabled, setAutoSearchEnabled } = useJinaStore(useShallow(state => ({
-    autoSearchEnabled: state.autoSearchEnabled,
-    setAutoSearchEnabled: state.setAutoSearchEnabled,
+  const { autoSearchMode, setAutoSearchMode } = useJinaStore(useShallow(state => ({
+    autoSearchMode: state.autoSearchMode,
+    setAutoSearchMode: state.setAutoSearchMode,
   })));
 
 
@@ -119,16 +119,24 @@ export function GoogleSearchSettings() {
       />
     </FormControl>
 
-    {/* [Jina patch] auto-search toggle (same switch as the composer Web button; useful on mobile) */}
-    <FormControl>
-      <Checkbox
-        size='sm' label='Auto-search every message'
-        checked={autoSearchEnabled} onChange={(event) => setAutoSearchEnabled(event.target.checked)}
-      />
-      <FormHelperText sx={{ fontSize: 'xs' }}>
-        Answers plain chat messages with fresh web results - no /react needed. Same as the composer Web button.
-      </FormHelperText>
+    {/* [Jina patch] auto-search mode (same control as the composer Web button; useful on mobile) */}
+    <FormControl orientation='horizontal' sx={{ justifyContent: 'space-between', alignItems: 'center' }}>
+      <FormLabelStart title='Auto web search'
+                      description='Same as the composer Web button'
+                      tooltip='Auto: a fast model decides per message whether a web search is needed and rewrites the query with chat context. Always: search on every message.' />
+      <Select
+        size='sm' value={autoSearchMode}
+        onChange={(_event, value) => value && setAutoSearchMode(value)}
+        sx={{ minWidth: 140 }}
+      >
+        <Option value='off'>Off</Option>
+        <Option value='auto'>Auto</Option>
+        <Option value='always'>Always</Option>
+      </Select>
     </FormControl>
+    <FormHelperText sx={{ fontSize: 'xs' }}>
+      Answers plain chat messages with fresh web results - no /react needed. Follow-ups like &quot;when will it be released?&quot; are searched with the conversation subject.
+    </FormHelperText>
 
   </>;
 }
