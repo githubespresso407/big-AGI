@@ -11,6 +11,7 @@ import { metricsChatGenerateLgToMd, metricsFinishChatGenerateLg, metricsPendChat
 import { nanoidToUuidV4 } from '~/common/util/idUtils';
 
 import type { AixWire_Particles } from '../server/api/aix.wiretypes';
+import { AixWire_Vendors } from '../server/api/aix.wiretypes';
 
 import type { AixClientDebugger, AixFrameId } from './debugger/memstore-aix-client-debugger';
 import { aixClientDebugger_completeFrame, aixClientDebugger_init, aixClientDebugger_recordParticleReceived, aixClientDebugger_setProfilerMeasurements, aixClientDebugger_setRequest } from './debugger/reassembler-debug';
@@ -27,6 +28,12 @@ const ELLIPSIZE_DEV_ISSUE_MESSAGES = 4096; // for _appendReassemblyDevError
 const MERGE_ISSUES_INTO_TEXT_PART_IF_OPEN = false; // 2025-10-10: put errors in the dedicated part
 const VP_PERSISTENCE_DELAY = 500; // persistence of vision for voidPlaceholders
 
+/** Placeholders the reassembler manages (progress, follow-ups, controls) - 'notice' placeholders are user-dismissed: never auto-removed or recycled */
+const _isTransientPlaceholder = (f: Parameters<typeof isVoidPlaceholderFragment>[0]) => isVoidPlaceholderFragment(f) && f.part.pType !== 'notice';
+
+/** The status chip of a server retry, see onAixRetryReset */
+const _isRetryStatus = (f: Parameters<typeof isVoidPlaceholderFragment>[0]) => isVoidPlaceholderFragment(f) && f.part.aixControl?.ctl === 'ec-retry';
+const _RETRY_COUNTDOWN = 'Retrying in ';
 
 // Future: Reassembly Policies
 // type ReassemblyPolicyVoidPlaceholder =
@@ -58,7 +65,7 @@ type ReassemblyState = AixChatGenerateContent_LL & {
   /** Cursor: index of the open text fragment for appending, or null if none is open */
   _textFragmentIndex: number | null;
   /** Pending message phase (OpenAI/xAI Responses): set at message-item open, stamped on the NEXT text fragment created */
-  _pendingTextPhase: { vendor: 'openai' | 'xai', phase: 'commentary' | 'final_answer' } | null;
+  _pendingTextPhase: { rspVendor: AixWire_Vendors.RspVendor, phase: 'commentary' | 'final_answer' } | null;
   /** set/overwritten during streaming, consumed by finalizeReassembly() */
   cgMetricsLg: undefined | AixChatGenerateContent_LL_Result['cgMetricsLg'];
   /** Raw termination cause: undetermined yet, client-set, or received from the wire on {cg:'end'} */
@@ -75,6 +82,7 @@ export class ContentReassembler {
 
   // constructor
   private readonly debuggerFrameId: AixFrameId | null;
+  private readonly wallStartTs: number;
 
   // processing mechanics
   private readonly wireParticlesBacklog: AixWire_Particles.ChatGenerateOp[] = [];
@@ -101,6 +109,7 @@ export class ContentReassembler {
     private readonly onInlineVideo?: (video: { blob: Blob; mimeType: string; label: string }) => void,
     private readonly wireAbortSignal?: AbortSignal,
   ) {
+    this.wallStartTs = Date.now(); // constructed right before the first wire call, once across client-side retries
     this.initialState = {
       // AixChatGenerateContent_LL fields:
       fragments: [],
@@ -173,6 +182,12 @@ export class ContentReassembler {
     // - mark active operations as errored on non-clean terminations
     if (outcome !== 'completed') {
       this.S.fragments = this.S.fragments.map(fragment => {
+        // a retry countdown left behind by a stop or by the final failure is no longer true: say what happened
+        if (isVoidPlaceholderFragment(fragment) && fragment.part.aixControl?.ctl === 'ec-retry' && fragment.part.pText.includes(_RETRY_COUNTDOWN)) {
+          const { pText, aixControl: { rAttempt = '-' } } = fragment.part;
+          const ending = outcome === 'aborted' ? `Stopped at attempt ${rAttempt}` : `Gave up after ${rAttempt} attempts`;
+          return { ...fragment, part: { ...fragment.part, pText: pText.slice(0, pText.indexOf(_RETRY_COUNTDOWN)) + ending } };
+        }
         if (!isVoidPlaceholderFragment(fragment) || !fragment.part.opLog?.length) return fragment;
         const updatedOpLog = fragment.part.opLog.map(entry => {
           const trimmedText = entry.text?.endsWith('...') ? entry.text.slice(0, -3) : entry.text;
@@ -188,6 +203,9 @@ export class ContentReassembler {
 
 
     // Metrics
+    // dtWall: the vendor-measured dtAll only arrives with a vendor-terminated stream; a stopped or failed run gets the client wall clock instead
+    if (!this.S.cgMetricsLg && outcome !== 'completed') this.S.cgMetricsLg = {};
+    if (this.S.cgMetricsLg) this.S.cgMetricsLg.dtWall = Date.now() - this.wallStartTs;
     metricsFinishChatGenerateLg(this.S.cgMetricsLg, outcome !== 'completed');
 
     // [AI Inspector] Debugging, finalize the frame
@@ -342,7 +360,7 @@ export class ContentReassembler {
       // PartParticleOp
       case 'p' in op:
         // heuristics to remove the placeholder if real user-destined content arrives
-        if (op.p !== '❤' && op.p !== 'vp' && op.p !== 'urlc' && op.p !== 'hres' && op.p !== 'svs' && op.p !== 'tr_' && op.p !== 'trs')
+        if (op.p !== '❤' && op.p !== 'vp' && op.p !== 'vnt' && op.p !== 'urlc' && op.p !== 'hres' && op.p !== 'svs' && op.p !== 'tr_' && op.p !== 'trs')
           await this._removeLastVoidPlaceholderDelayed();
         switch (op.p) {
           case '❤':
@@ -386,6 +404,9 @@ export class ContentReassembler {
             break;
           case 'hres':
             this.onAppendHostedResource(op);
+            break;
+          case 'vnt':
+            this.onAddVoidNotice(op);
             break;
           case 'svs':
             this.onSetVendorState(op);
@@ -480,7 +501,7 @@ export class ContentReassembler {
 
     // stamp the pending message phase on the new text fragment
     if (this.S._pendingTextPhase) {
-      newTextFragment.vendorState = { [this.S._pendingTextPhase.vendor]: { phase: this.S._pendingTextPhase.phase } };
+      newTextFragment.vendorState = { [this.S._pendingTextPhase.rspVendor]: { phase: this.S._pendingTextPhase.phase } };
       this.S._pendingTextPhase = null;
     }
 
@@ -791,6 +812,12 @@ export class ContentReassembler {
     }
   }
 
+  private onAddVoidNotice({ nt, text, detail }: Extract<AixWire_Particles.PartParticleOp, { p: 'vnt' }>): void {
+    // display-only notice at its stream position: close the open text fragment, so later text starts a new one after it
+    this.S._textFragmentIndex = null;
+    this._pushFragment(createPlaceholderVoidFragment(text, 'notice', undefined, undefined, detail, nt));
+  }
+
   private onAddUrlCitation(urlc: Extract<AixWire_Particles.PartParticleOp, { p: 'urlc' }>): void {
 
     const { title, url, num: refNumber, from: startIndex, to: endIndex, text: textSnippet, pubTs } = urlc;
@@ -869,7 +896,7 @@ export class ContentReassembler {
       cts: anchorCts,
     };
 
-    const phIdx = this.S.fragments.findLastIndex(isVoidPlaceholderFragment);
+    const phIdx = this.S.fragments.findLastIndex(_isTransientPlaceholder);
     if (phIdx < 0) {
 
       // New placeholder with initial opLog entry (root level = 0)
@@ -961,12 +988,12 @@ export class ContentReassembler {
       return; // session handle is message-scoped, not fragment-scoped
     }
 
-    // Message phase (OpenAI/xAI Responses): sent at message-item open, before any text. Break text
+    // Message phase (Responses dialects): sent at message-item open, before any text. Break text
     // accumulation so adjacent items (commentary then final_answer) land in distinct fragments, and
     // stamp the phase on the next text fragment created (see onAppendText).
-    if ((vendor === 'openai' || vendor === 'xai') && 'messagePhase' in state && state.messagePhase) {
+    if (AixWire_Vendors.isRspVendor(vendor) && 'messagePhase' in state && state.messagePhase) {
       this.S._textFragmentIndex = null;
-      this.S._pendingTextPhase = { vendor, phase: state.messagePhase };
+      this.S._pendingTextPhase = { rspVendor: vendor, phase: state.messagePhase };
       return;
     }
 
@@ -981,8 +1008,8 @@ export class ContentReassembler {
     // Guard: reasoningItem state must land on the ma (reasoning) fragment that produced it.
     // If no summary was appended during the reasoning item (summary disabled / skipped), the last
     // fragment will belong to an unrelated preceding item - dropping the handle is safer than contaminating.
-    // Applies to both OpenAI and xAI namespaces; each is opaque/private to its producing vendor.
-    if ((vendor === 'openai' || vendor === 'xai') && 'reasoningItem' in state && lastFragment.part.pt !== 'ma') {
+    // Applies to every Responses-dialect namespace; each is opaque/private to its producing vendor.
+    if (AixWire_Vendors.isRspVendor(vendor) && 'reasoningItem' in state && lastFragment.part.pt !== 'ma') {
       console.warn(`[ContentReassembler] ${vendor} reasoningItem state without preceding ma fragment - dropping continuity handle`, { lastFragmentPt: lastFragment.part.pt });
       return;
     }
@@ -998,7 +1025,7 @@ export class ContentReassembler {
   }
 
   private _removeAllVoidPlaceholders(): void {
-    this.S.fragments = this.S.fragments.filter(f => !isVoidPlaceholderFragment(f));
+    this.S.fragments = this.S.fragments.filter(f => !_isTransientPlaceholder(f));
     // _textFragmentIndex may now be invalid - null it since this runs at finalization only
     this.S._textFragmentIndex = null;
   }
@@ -1010,14 +1037,14 @@ export class ContentReassembler {
     //   return isVoidPlaceholderFragment(f) && !f.part.opLog?.length;
     // }
     // skip if none
-    if (this.S.fragments.findLastIndex(isVoidPlaceholderFragment) < 0) return false;
+    if (this.S.fragments.findLastIndex(_isTransientPlaceholder) < 0) return false;
 
     // delay before removal
     await new Promise(resolve => setTimeout(resolve, VP_PERSISTENCE_DELAY));
 
     // for stability, search the fragment Index again - this must not have changed, as any mutation would be queued to
     // this awaited function, but better safe than sorry
-    const idx = this.S.fragments.findLastIndex(isVoidPlaceholderFragment);
+    const idx = this.S.fragments.findLastIndex(_isTransientPlaceholder);
     if (idx < 0) return true; // already removed during the delay
     this._spliceFragment(idx);
     return true;
@@ -1077,7 +1104,7 @@ export class ContentReassembler {
         // emitted by: Gemini RECITATION/IMAGE_RECITATION (note: can be FP-prone on benign content like code/quotes)
         'filter-recitation': { outcome: 'failed', tsr: 'filter', errorMessage: 'Response blocked - potential copyrighted/recited content.' },
         // emitted by: Anthropic stop_reason=refusal, Gemini LANGUAGE (unsupported)
-        'filter-refusal': { outcome: 'failed', tsr: 'filter', errorMessage: 'Response refused by the provider\'s safety filter.' },
+        'filter-refusal': { outcome: 'failed', tsr: 'filter', errorMessage: 'Response refused by the provider\'s safety classifier.' },
       } as const;
       if (dialectTokenStopReason in classification)
         return classification[dialectTokenStopReason];
@@ -1183,10 +1210,14 @@ export class ContentReassembler {
       }
     }
 
+    // one retry status at a time: connect retries clear nothing ('none'), so the previous status would stack
+    for (let idx; (idx = this.S.fragments.findLastIndex(_isRetryStatus)) >= 0;)
+      this._spliceFragment(idx);
+
     // -> ph: show retry status
     const retryMessage =  delayMs > 0
-      ? `${reason ? `${reason} - ` : ''}Retrying in ${Math.round(delayMs / 100) / 10}s - ${attempt}/${maxAttempts}`
-      : `Connection failed (${attempt} retries)`;
+      ? `${reason ? `${reason} - ` : ''}${_RETRY_COUNTDOWN}${Math.round(delayMs / 100) / 10}s - ${attempt}/${maxAttempts}`
+      : `Connection failed (${attempt} attempts)`;
     this._pushFragment(createPlaceholderVoidFragment(retryMessage, undefined, {
       ctl: 'ec-retry',
       rScope: rScope,

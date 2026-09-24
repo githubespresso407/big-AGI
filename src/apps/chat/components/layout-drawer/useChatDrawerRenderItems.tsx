@@ -92,7 +92,7 @@ export function useChatDrawerRenderItems(
   filterHasImageAssets: boolean,
   filterHasDocFragments: boolean,
   filterIsArchived: boolean,
-  filterOlderThanDays: number | null, // [Age filter patch]
+  filterOlderThanDays: number | null,
   grouping: ChatNavGrouping,
   searchSorting: ChatSearchSorting,
   showRelativeSize: boolean,
@@ -125,7 +125,7 @@ export function useChatDrawerRenderItems(
       const conversationsInFolder = !activeFolder ? conversations
         : conversations.filter(_c => activeFolder.conversationIds.includes(_c.id));
 
-      // [Age filter patch] filter 1.5: last-activity older than the selected cutoff
+      // filter 1.5: last-activity older than the selected cutoff (via tested helper)
       const conversationsInAge = filterOlderThanDays === null ? conversationsInFolder
         : conversationsInFolder.filter(_c => filterOlderThanMatches(_c.updated || _c.created || 0, filterOlderThanDays));
 
@@ -300,12 +300,13 @@ export function useChatDrawerRenderItems(
                 : filterHasImageAssets ? 'No image results'
                   : filterHasStars ? 'No starred results'
                     : filterIsArchived ? 'No archived conversations'
-                      : isSearching ? 'Text not found'
-                        : 'No conversations in folder',
+                      : filterOlderThanDays !== null ? 'No older conversations'
+                        : isSearching ? 'Text not found'
+                          : 'No conversations in folder',
         });
       } else {
         // filtering reminder (will be rendered with a clear button too)
-        if (filterHasBeamOpen || filterHasStars || filterHasImageAssets || filterHasDocFragments || filterIsArchived) {
+        if (filterHasBeamOpen || filterHasStars || filterHasImageAssets || filterHasDocFragments || filterIsArchived || filterOlderThanDays !== null) {
           renderNavItems.unshift({
             type: 'nav-item-info-message',
             message: `${filterIsArchived ? 'Showing' : 'Filtering by'} ${[
@@ -314,6 +315,7 @@ export function useChatDrawerRenderItems(
               filterHasImageAssets && 'images',
               filterHasDocFragments && 'attachments',
               filterIsArchived && 'archived',
+              filterOlderThanDays !== null && 'age',
             ].filter(Boolean).join(', ')}`,
           });
         }

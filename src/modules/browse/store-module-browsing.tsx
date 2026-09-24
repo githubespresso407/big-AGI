@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 import { CapabilityBrowsing } from '~/common/components/useCapabilities';
-import { getBackendCapabilities } from '~/modules/backend/store-backend-capabilities';
+import { hasServerConf } from '~/common/app.serverconf';
 import { isValidJinaApiKey, useJinaStore } from '~/modules/jina/store-module-jina';
 
 
@@ -56,7 +56,7 @@ export const useBrowseStore = create<BrowseState>()(
 
 export function useBrowseCapability(): CapabilityBrowsing {
   // server config
-  const isServerConfig = getBackendCapabilities().hasBrowsing;
+  const isServerConfig = hasServerConf('hasBrowsing');
 
   // external client state
   const { wssEndpoint, enableComposerAttach, enableReactTool, enablePersonaTool } = useBrowseStore();

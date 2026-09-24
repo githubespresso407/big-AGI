@@ -3,7 +3,7 @@ import type * as z from 'zod/v4';
 import type { AixAPI_Model, AixAPIChatGenerate_Request } from '../../../api/aix.wiretypes';
 import { GeminiInteractionsWire_API_Interactions } from '../../wiretypes/gemini.interactions.wiretypes';
 
-import { approxDocPart_To_String, approxInReferenceTo_To_XMLString, aixSpillSystemToUser } from './adapters.common';
+import { approxDocPart_To_String, approxInReferenceTo_To_XMLString, approxMediaUrlPart_To_String, aixSpillSystemToUser } from './adapters.common';
 
 
 // configuration
@@ -32,7 +32,7 @@ type TInputPart = z.infer<typeof GeminiInteractionsWire_API_Interactions.InputCo
  *  - Per-agent runtime flags:
  *    - deep-research: `background: true` (REQUIRED per DR guide), plus `agent_config` with
  *      thinking_summaries / visualization.
- *    - antigravity (antigravity-preview-05-2026): `background` MUST NOT be true (upstream rejects
+ *    - antigravity (antigravity-preview-*): `background` MUST NOT be true (upstream rejects
  *      it: 'Agent does not support using background=True and requires store=True'), so we omit it
  *      and let the API default to false (sync streaming). `environment: "remote"` selects a fresh
  *      Google-hosted Linux sandbox; default tool set (code_execution, google_search, url_context,
@@ -183,6 +183,9 @@ function _buildUserContent(parts: Extract<AixAPIChatGenerate_Request['chatSequen
         break;
       case 'doc':
         textChunks.push(approxDocPart_To_String(part));
+        break;
+      case 'media_url':
+        textChunks.push(approxMediaUrlPart_To_String(part)); // Deep Research can at least browse the URL
         break;
       case 'meta_in_reference_to':
         const irt = approxInReferenceTo_To_XMLString(part);

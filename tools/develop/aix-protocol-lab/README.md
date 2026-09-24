@@ -65,11 +65,12 @@ checks report on top). Replays of a capture are deterministic and diffed automat
 |---|---|---|---|
 | anthropic-messages | typed SSE, explicit block lifecycle | claude-sonnet-4-6 | `codeExec` unlocks via a PTC tool (`allowed_callers: ['code_execution']`) - there is no direct switch |
 | openai-responses | typed events, sequence_number + addressed items | gpt-5.2 | `--oracle` supported; no hosted fetch tool |
+| metaai-responses | same grammar on api.meta.ai, `data: [DONE]` terminator, interleaved items | muse-spark-1.3 | reasoning + hosted `web_search`; no code exec / fetch; `--model muse-image-1.0 --no-stream` for image output |
 | openai-chat | chunked deltas, `[DONE]` terminator | gpt-4.1-mini | degenerate grammar, no hosted tools |
 | gemini-generate | chunked full objects, no event types | gemini-3-flash-preview | spans are parser-inferred |
-| gemini-interactions | typed step events | antigravity-preview-05-2026 | agent-implicit tools; resumable |
+| gemini-interactions | typed step events | antigravity-preview-09-2026 | agent-implicit tools; resumable |
 
-Scenario capability switches (`reasoning`, `webSearch`, `webFetch`, `codeExec`) compile to each
+Scenario capability switches (`reasoning`, `webSearch`, `webFetch`, `codeExec`, `webDynamic`, `fnCall`, `multiFn`) compile to each
 flavor's real knobs in `scenarios.ts`; switches without a mapping are reported, not dropped
 silently. `kitchen-sink` is the canonical gauntlet: reasoning + parallel search + code exec +
 parallel fetch + final text + an in-response reasoning-continuity probe.
@@ -121,11 +122,19 @@ output item (fixed in `outputItemEnter`). The wire is, as of today, strictly ord
 - **Known parser asymmetries found so far**: OpenAI code_interpreter emits a `code-exec`
   op-state only in streaming (NS emits cei/cer without it); Anthropic streaming used to crash
   on PTC pre-populated tool_use input where NS handled it (fixed).
+- **Oracle GET drops code_interpreter outputs**: the resume dispatch sends no `include`, so the
+  same-generation oracle projection lacks `cer` (S: cei -> cer -> text; ORACLE: cei -> text) and any
+  encrypted reasoning part. Lab limitation, not a parser asymmetry - identical on 5.6 Luna and 6 Astra.
 - **Whitespace**: streaming injects `\n\n` spacers between tool blocks and text (both modes,
   slightly different placement); text char counts run a few chars above wire on Anthropic.
 - **Vendor-generated ids** (tool call ids, item ids) differ across generations by definition.
 
 ## Findings already on record (captures of 2026-06-12)
+
+GPT-6 Sol and Luna (2026-09-22, `--model`): `kitchen-sink`, `burst`, `interleave` and `reason` (+ NS twin) are clean on
+`openai-responses`: contiguous sequence numbers, no cross-item interleaving, delta-vs-done and final-output oracles exact,
+full text, reasoning-signature and client-FC translation. `burst` on Sol defers the hosted tools past the client-FC
+turn boundary, as on 5.x.
 
 Fourth session (`interleave` scenario: distinct parallel FC + dynamic filtering + circulation, 2026-06-23):
 
@@ -203,6 +212,13 @@ First captures:
   parse tap, so they appear in raw chunks and coverage findings, not as ledger events.
 - Gemini flavors are implemented but not yet validated live (no GEMINI_API_KEY available at
   build time); gemini-interactions grammar checks are histogram-only on purpose (still moving).
-- Bedrock (AWS eventstream body transform) is out of scope for now.
+- Bedrock (AWS eventstream body transform) is out of scope for now; so are OpenRouter and xAI.
+- Single turn only: `followups` carries text, never `ma` parts or `_vnd` handles, and each capture uses one
+  model. Reasoning replay across turns, model or family switches, and tool-result round trips are not
+  covered; `LLM-openai-responses.md` records the direct-API probes (same-family rule, replay without
+  `web_search_call` items). A chain capture would need the client reassembly path (ContentReassembler
+  to DMessage to `aixCGR_ChatSequence_FromDMessagesOrThrow`) running headless.
+- `openai-chat` sends no effort, so tool scenarios (`fc`, `burst`, `interleave`) 400 on GPT-6 there
+  (function tools need effort `none` on Sol and Luna); use `openai-responses`.
 - Trace files store full payloads; image-heavy runs will be large (no clamping on particles).
 - Chrome Trace / Perfetto exporter: planned follow-up (the trace already carries all timestamps).

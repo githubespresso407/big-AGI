@@ -15,6 +15,15 @@ import * as z from 'zod/v4';
 //
 
 
+/**
+ * Processing tier - request and response, Chat Completions and Responses (xAI echoes it too).
+ * Request: 'flex' (0.5x, slower), 'fast' (2x, up to 2.5x faster; 'priority' is the legacy name, still accepted), 'default', 'auto'.
+ * Response: the tier actually served - 'default' on a downgraded fast/flex request, 'priority' for fast.
+ * Open to new tiers ('ultrafast' is gated today) rather than failing on an unknown value.
+ */
+const OpenAIWire_ServiceTier_schema = z.enum(['auto', 'default', 'flex', 'fast', 'priority']).or(z.string());
+
+
 export namespace OpenAIWire_ContentParts {
 
   /// Content parts - Input
@@ -50,10 +59,20 @@ export namespace OpenAIWire_ContentParts {
     }),
   });
 
+  const OpenRouter_VideoUrlContentPart_schema = z.object({
+    // [OpenRouter] input content: video by URL - OR extension, not standard OpenAI. Provider-dependent:
+    // YouTube URLs pass through only to AI-Studio-served Gemini; other providers need direct/base64 URLs
+    type: z.literal('video_url'),
+    video_url: z.object({
+      url: z.string(),
+    }),
+  });
+
   export const ContentPart_schema = z.discriminatedUnion('type', [
     TextContentPart_schema,
     ImageContentPart_schema,
     OpenAI_AudioContentPart_schema,
+    OpenRouter_VideoUrlContentPart_schema,
   ]);
 
   export function TextContentPart(text: string): z.infer<typeof TextContentPart_schema> {
@@ -66,6 +85,10 @@ export namespace OpenAIWire_ContentParts {
 
   export function OpenAI_AudioContentPart(data: string, format: 'wav' | 'mp3'): z.infer<typeof OpenAI_AudioContentPart_schema> {
     return { type: 'input_audio', input_audio: { data, format } };
+  }
+
+  export function OpenRouter_VideoUrlContentPart(url: string): z.infer<typeof OpenRouter_VideoUrlContentPart_schema> {
+    return { type: 'video_url', video_url: { url } };
   }
 
   /// Content parts - Output
@@ -273,6 +296,28 @@ export namespace OpenAIWire_Tools {
         description: z.string().optional(),
       }),
     }),
+    // [OpenRouter, 2026-09-08] server tools, run by OpenRouter itself (behavior: aix.wiretypes.openrouter.ts). Parameter
+    // names are OpenRouter's: https://openrouter.ai/docs/guides/features/server-tools/web-search and /web-fetch
+    z.object({
+      type: z.literal('openrouter:web_search'),
+      parameters: z.object({
+        engine: z.enum(['auto', 'native', 'exa', 'parallel', 'firecrawl', 'perplexity']).optional(), // default 'auto': native where the provider has it, else Exa
+        mode: z.string().optional(), // Exa: instant|fast|auto|deep-lite|deep|deep-reasoning, Parallel: turbo|fast|basic|advanced; not validated against the engine upstream
+        max_results: z.number().int().min(1).max(25).optional(), // Perplexity: 1-20; ignored by native
+        max_uses: z.number().int().min(1).optional(), // enforced one above the number set (aix.wiretypes.openrouter.ts)
+        max_total_results: z.number().int().min(1).optional(),
+        search_context_size: z.enum(['low', 'medium', 'high']).optional(), // ignored by native and Firecrawl
+        max_characters: z.number().int().min(1).max(100000).optional(), // wins over search_context_size; ignored by native and Firecrawl
+      }).optional(),
+    }),
+    z.object({
+      type: z.literal('openrouter:web_fetch'),
+      parameters: z.object({
+        engine: z.enum(['auto', 'native', 'exa', 'openrouter', 'firecrawl', 'parallel']).optional(),
+        max_uses: z.number().int().min(1).optional(), // enforced one above the number set (aix.wiretypes.openrouter.ts)
+        max_content_tokens: z.number().int().min(1).optional(),
+      }).optional(),
+    }),
   ]);
 
   export const ToolChoice_schema = z.union([
@@ -417,7 +462,11 @@ export namespace OpenAIWire_API_Chat_Completions {
 
     // -- Vendor-specific extensions to the request --
 
+    // [OpenRouter, 2026-09-08] server-tool step budget, shared by every 'openrouter:*' tool; default and cap 30 upstream, enforced one above the number set (aix.wiretypes.openrouter.ts)
+    max_tool_calls: z.number().int().min(1).max(30).optional(),
+
     // [OpenRouter, 2025-10-22] OpenRouter-specific plugins parameter for web search and other hosted tools
+    // [OpenRouter, 2026-09-08] the 'web' plugin is deprecated upstream in favor of the 'openrouter:web_search' tool; kept for endpoints without tool support
     plugins: z.array(z.union([
       z.object({
         id: z.literal('web'),
@@ -495,7 +544,7 @@ export namespace OpenAIWire_API_Chat_Completions {
     // (OMITTED BY CHOICE) advanced API configuration
     // store: z.boolean().optional(), // Defaults to false. Whether or not to store the output of this chat completion request for use in our model distillation or evals products.
     // metadata: z.record(z.string(), z.any()).optional(), // Developer-defined tags and values used for filtering completions in [the dashboard](https://platform.openai.com/completions)
-    // service_tier: z.string().optional(),
+    service_tier: OpenAIWire_ServiceTier_schema.nullish(), // [2026-09-03]
 
   });
 
@@ -568,6 +617,13 @@ export namespace OpenAIWire_API_Chat_Completions {
       }),
     ]).nullish(),
 
+    // [OpenRouter, 2026-09-08] server tools ('openrouter:web_search' / 'web_fetch') counters; web_search_requests is also reported for the legacy 'web' plugin
+    server_tool_use_details: z.object({
+      web_search_requests: z.number().nullish(),
+      tool_calls_requested: z.number().nullish(),
+      tool_calls_executed: z.number().nullish(),
+    }).nullish(),
+
     // [OpenRouter, 2025-10-22] additional usage fields when used with Chutes
     // is_byok: z.boolean().optional(), // Bring Your Own Key indicator
     // cost_details: z.object({
@@ -626,6 +682,13 @@ export namespace OpenAIWire_API_Chat_Completions {
         url: z.string(), // base64 data URL like "data:image/png;base64,..."
       }),
     })).optional(),
+
+    /**
+     * [2026-08-16] Plain reasoning text, sent INSTEAD of reasoning_content by some hosts (non-streaming): Modular Cloud
+     * z-ai/glm-5.2 + moonshotai/kimi-k2.7-code (reasoning_content: null there), Groq + Cerebras gpt-oss-120b, TogetherAI
+     * DeepSeek-V4-Flash. OpenRouter/Nous send it too, duplicated in reasoning_details - the parser reads it as a fallback only.
+     */
+    reasoning: z.string().nullable().optional(),
 
   });
 
@@ -744,6 +807,8 @@ export namespace OpenAIWire_API_Chat_Completions {
     reasoning_content: z.string().nullable().optional(), // [Deepseek, 2025-01-20]
     // [OpenRouter, 2025-01-20] Reasoning traces
     reasoning_details: z.array(OpenAIWire_ContentParts.OpenRouter_ReasoningDetail_schema).nullish(),
+    // [2026-08-16, Modular] plain reasoning text, sent instead of reasoning_content by some hosts (Modular glm-5.2/kimi-k2.7-code, Groq + Cerebras gpt-oss-120b, Together DeepSeek-V4-Flash; OpenRouter duplicates it in reasoning_details)
+    reasoning: z.string().nullable().optional(),
     // delta-tool-calls content
     tool_calls: z.array(ChunkDeltaToolCalls_schema).optional()
       .nullable(), // [TogetherAI] added .nullable(), see https://github.com/togethercomputer/together-python/issues/160
@@ -861,6 +926,8 @@ export namespace OpenAIWire_API_Images_Generations {
 
   /** GPT Image family models - shared between this namespace, Images_Edits, and the Responses image_generation tool. */
   export const GptImageModels_schema = z.enum([
+    'gpt-image-2.5-flare', // 2026-09-08 - fast, default; +'xhigh'/'max' quality, arbitrary WxH sizes (mult of 16, 1:3..3:1, <=3840)
+    'gpt-image-2.5-sunburst', // 2026-09-08 - same price/tokens as flare, ~2x latency, tuned for edit precision
     'gpt-image-2',
     'gpt-image-1.5',
     'gpt-image-1',
@@ -870,43 +937,33 @@ export namespace OpenAIWire_API_Images_Generations {
   export type Request = z.infer<typeof Request_schema>;
   const Request_schema = z.object({
 
-    // 32,000 for gpt-image family, 4,000 for dall-e-3, 1,000 for dall-e-2
+    // 32,000 for the gpt-image family
     prompt: z.string().max(32000),
 
-    model: z.union([
-      GptImageModels_schema,
-      z.enum([
-        'dall-e-3',
-        'dall-e-2', // default
-      ]),
-    ]).optional(),
+    // DALL·E 2/3 were removed from the API on 2026-05-12
+    model: GptImageModels_schema.optional(),
 
-    // The number of images to generate. Must be between 1 and 10. For dall-e-3, only n=1 is supported.
+    // The number of images to generate. Must be between 1 and 10.
     n: z.number().min(1).max(10).nullable().optional(),
 
     // Image quality
     quality: z.enum([
       'auto',                   // default
-      'high', 'medium', 'low',  // gpt-image
-      'hd', 'standard',         // dall-e-3: hd | standard, dall-e-2: only standard
+      'max', 'xhigh',           // gpt-image-2.5 only (400 on older)
+      'high', 'medium', 'low',
     ]).optional(),
 
-    // The format in which generated images with dall-e-2 and dall-e-3 are returned.
-    // GPT Image models will always return base64-encoded images and do NOT support this parameter.
+    // GPT Image models always return base64 and reject this parameter ('Unknown parameter'); kept for the LocalAI dialect
     response_format: z.enum(['url', 'b64_json']).optional(),
 
-    // size of the generated images
+    // size of the generated images - the API also accepts arbitrary WxH (multiples of 16, 1:3..3:1, longest edge 3840), not exposed yet
     size: z.enum([
-      'auto',       // GI (or default if omitted)
-      '256x256',    //          D2
-      '512x512',    //          D2
-      '1024x1024',  // GI  D3  D2
-      // landscape
-      '1536x1024',  // GI
-      '1792x1024',  //      D3
-      // portrait
-      '1024x1536',  // GI
-      '1024x1792',  //      D3
+      'auto',       // default if omitted
+      '1024x1024',
+      '1536x1024',  // landscape
+      '1024x1536',  // portrait
+      '256x256',    // LocalAI only
+      '512x512',    // LocalAI only
     ]).optional(),
 
     // optional unique identifier representing your end-user
@@ -926,12 +983,6 @@ export namespace OpenAIWire_API_Images_Generations {
 
     // WEBP/JPEG compression level for GPT Image models
     output_compression: z.number().min(0).max(100).int().optional(),
-
-
-    // -- Dall-E 3 Specific Parameters --
-
-    // DALL-E 3 ONLY - style - defaults to vivid
-    style: z.enum(['vivid', 'natural']).optional(),
 
   });
 
@@ -972,17 +1023,14 @@ export namespace OpenAIWire_API_Images_Edits {
    */
   export const Request_schema = z.object({
 
-    // 32,000 for gpt-image, 1,000 for dall-e-2
+    // 32,000 for the gpt-image family
     prompt: z.string().max(32000),
 
     // image: file | file[] - REQUIRED - Handled as file uploads in FormData ('image' field)
 
     // mask: file - OPTIONAL - Handled as file upload in FormData ('mask' field)
 
-    model: z.union([
-      OpenAIWire_API_Images_Generations.GptImageModels_schema,
-      z.enum(['dall-e-2' /* dall-e-3 does not do image edits */]),
-    ]).optional(),
+    model: OpenAIWire_API_Images_Generations.GptImageModels_schema.optional(),
 
     // Number of images to generate, between 1 and 10
     n: z.number().min(1).max(10).nullable().optional(),
@@ -990,23 +1038,16 @@ export namespace OpenAIWire_API_Images_Edits {
     // Image quality
     quality: z.enum([
       'auto',                   // default
-      'high', 'medium', 'low',  // gpt-image
-      'standard',               // dall-e-2: only standard
+      'max', 'xhigh',           // gpt-image-2.5 only (400 on older)
+      'high', 'medium', 'low',
     ]).optional(),
-
-    // response_format: string - OPTIONAL - Defaults to 'url'. Only for DALL-E 2. GPT Image models always return b64_json.
-    // OMITTED here as we'll enforce b64_json or handle it based on model if DALL-E 2 edit were supported.
 
     // size of the generated images
     size: z.enum([
-      'auto',       // GI (or default if omitted)
-      '256x256',    //          D2
-      '512x512',    //          D2
-      '1024x1024',  // GI       D2
-      // landscape
-      '1536x1024',  // GI
-      // portrait
-      '1024x1536',  // GI
+      'auto',       // default if omitted
+      '1024x1024',
+      '1536x1024',  // landscape
+      '1024x1536',  // portrait
     ]).optional(),
 
     // optional unique identifier representing your end-user
@@ -1236,7 +1277,7 @@ export namespace OpenAIWire_Responses_Items {
       // Action type: 'open_page' - opens/visits a specific web page
       z.object({
         type: z.literal('open_page'),
-        url: z.string().nullable(), // URL to open (can be null in some cases)
+        url: z.string().nullish(), // URL to open (can be null in some cases; [Meta AI] absent on 'failed' opens)
       }),
 
       // Action type: 'find_in_page' - searches for a pattern within an opened page
@@ -1514,7 +1555,8 @@ export namespace OpenAIWire_Responses_Tools {
     background: z.enum(['transparent', 'opaque', 'auto']).optional(), // defaults to 'auto'
     /**
      * Control how much effort the model will exert to match the style and features, especially facial features, of input images.
-     * Supported for gpt-image-1 / gpt-image-1.5+ (not gpt-image-1-mini). Defaults to 'low'.
+     * Only gpt-image-1 and gpt-image-1.5 accept it - gpt-image-2 and gpt-image-2.5 return 400 `invalid_input_fidelity_model`
+     * (verified 2026-09-09, despite the docs saying "1.5 and later"). Defaults to 'low'.
      */
     input_fidelity: z.enum(['high', 'low']).optional(),
     input_image_mask: z.object({
@@ -1530,8 +1572,8 @@ export namespace OpenAIWire_Responses_Tools {
     output_format: z.enum(['png', 'webp', 'jpeg']).optional(),
     /** Number of partial images to generate in streaming mode, from 0 (default) to 3. */
     partial_images: z.number().int().min(0).max(3).optional(),
-    /** Quality of the generated image. Defaults to 'auto' */
-    quality: z.enum(['low', 'medium', 'high', 'auto']).optional(),
+    /** Quality of the generated image. Defaults to 'auto' - which resolves to 'low' on simple prompts (verified 2026-09-09). 'xhigh'/'max' are gpt-image-2.5 only. */
+    quality: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'auto']).optional(),
     /** Default: auto */
     size: z.enum(['1024x1024', '1024x1536', '1536x1024', 'auto']).or(z.string()).optional(),
     // Not supported in the request, echoed by the API, but always 1
@@ -1668,10 +1710,10 @@ export namespace OpenAIWire_API_Responses {
       // 'computer_call_output.output.image_url',
     ])).optional(), // additional output to include in the response
     user: z.string().optional(), // stable identifier for your end-users
+    service_tier: OpenAIWire_ServiceTier_schema.nullish(), // [2026-09-03]
 
     // Unused
     // metadata: z.record(z.string(), z.any()).optional(), // set of 16 key-value pairs that can be attached to an object
-    // service_tier: z.enum(['auto', 'default', 'flex', 'priority']).nullish(),
     // prompt: z.object({ // reference to a prompt template and its variables
     //   id: z.string(),
     //   version: z.string().optional(),
@@ -1708,15 +1750,30 @@ export namespace OpenAIWire_API_Responses {
     output: z.array(OpenAIWire_Responses_Items.OutputItem_schema),
 
     usage: z.object({
-      input_tokens: z.number(),
+      input_tokens: z.number(), // inclusive of cached and written tokens
       input_tokens_details: z.object({
         cached_tokens: z.number().optional(),
+        cache_write_tokens: z.number().nullish(), // GPT-5.6+: written tokens (1.25x input; every cold prompt is written)
       }).optional(),
       output_tokens: z.number(),
       output_tokens_details: z.object({
         reasoning_tokens: z.number().optional(),
       }).optional(),
       total_tokens: z.number(),
+      // [xAI] exact charge (1 tick = 1e-10 USD) and per-tool call counts
+      cost_in_usd_ticks: z.number().nullish(),
+      server_side_tool_usage_details: z.object({
+        web_search_calls: z.number().nullish(),
+        x_search_calls: z.number().nullish(),
+      }).nullish(),
+    }).nullish(),
+
+    service_tier: OpenAIWire_ServiceTier_schema.nullish(), // the tier served ('default' on a downgrade); on streams already on 'response.created'
+    // [OpenAI] per-tool usage outside `usage`: web search calls bill per call; image_gen has its own token split (not priced yet)
+    tool_usage: z.object({
+      web_search: z.object({
+        num_requests: z.number().nullish(), // counts 'search' actions only (open_page is free)
+      }).nullish(),
     }).nullish(),
 
     // Echo State management & API options (with defaults)

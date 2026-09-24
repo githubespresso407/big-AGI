@@ -25,59 +25,93 @@ const _wireModularModelItemSchema = z.object({
 });
 
 
+// GLM effort ladder on Modular: 'none' hard-off, 'high' the reduced tier, 'max' the deep tier (= vendor default).
+// 'low' deliberately excluded - measured indistinguishable from 'high' (see the GLM 5.2 entry).
+const _PS_GlmEffort: ModelDescriptionSchema['parameterSpecs'] = [
+  { paramId: 'llmVndMiscEffort', enumValues: ['none', 'high', 'max'] },
+] as const;
+
+
 // [Modular Cloud] Editorial table for the shared endpoints (array order = display order), measured
-// live 2026-08-13 (GLM 5.2 added 2026-08-14). Output caps are unverified where noted: the server
-// silently clamps oversized max_tokens instead of erroring, so an over-large value is never
-// observable as a failure.
+// live 2026-08-13 (GLM 5.2 added 2026-08-14, re-measured 2026-08-16). Output caps are unverified where
+// noted: the server silently clamps oversized max_tokens instead of erroring, so an over-large value is
+// never observable as a failure. Context windows ARE observable (oversized prompt -> 400 with the limit).
+// pubDate is the upstream creator's release date, not the day Modular listed the model (host rule).
+// Re-verified 2026-08-17: same 5 chat ids (+ the FLUX image id we skip), every context re-probed exact
+// with the 400 oracle, every model still echoes an nvidia/*-NVFP4 id, prices unchanged on
+// modular.com/pricing.
+// 2026-08-31 pass: google/gemma-4-26b-a4b-it delisted (404 on use, gone from the rate card) - entry removed.
+// zai-org/glm-5.3 landed (added below; it echoes its own id, not an nvidia/*-NVFP4 one). MiniMaxAI/MiniMax-M3-MXFP8
+// was listed briefly (503 on use) and delisted again. The marketing page shows a 'GLM 5.3 Flash' that /v1/models does
+// not list - not added until it does.
 const _modularKnownModels = llmsDefineManualMappings([
   {
     idPrefix: 'minimax/minimax-m3',
     label: 'MiniMax M3',
+    pubDate: '20260601',
     description: '1M-context multimodal MoE with default-on reasoning. Served as NVIDIA NVFP4 (4-bit) quantization on Modular Cloud shared endpoints.',
     contextWindow: 1048576,
     maxCompletionTokens: 131072, // unverified
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Vision, LLM_IF_OAI_Reasoning, LLM_IF_OAI_PromptCaching],
-    chatPrice: { input: 0.30, output: 1.20, cache: { cType: 'oai-ac', read: 0.06 } },
+    benchmark: { cbaElo: 1444 }, // lmarena: minimax-m3
+    chatPrice: { input: 0.30, output: 1.20, cache: { read: 0.06 } },
   },
   {
     idPrefix: 'google/gemma-4-31b-it',
     label: 'Gemma 4 31B',
+    pubDate: '20260402',
     description: 'Google Gemma 4 31B instruction-tuned, text+image input. Served as NVIDIA NVFP4 (4-bit) quantization.',
     contextWindow: 262144,
     maxCompletionTokens: 32768, // unverified
     // no Reasoning (the catalog claims it, but this deployment exposes no reasoning surface) and no Json
     // (json_object emits type-corrupted output here)
-    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Vision],
-    chatPrice: { input: 0.25, output: 0.65 },
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Vision, LLM_IF_OAI_PromptCaching],
+    benchmark: { cbaElo: 1451 }, // lmarena: gemma-4-31b
+    chatPrice: { input: 0.25, output: 0.65, cache: { read: 0.08 } },
   },
-  {
-    idPrefix: 'google/gemma-4-26b-a4b-it',
-    label: 'Gemma 4 26B A4B',
-    description: 'Google Gemma 4 26B MoE (4B active), text+image input. Served as NVIDIA NVFP4 (4-bit) quantization.',
-    contextWindow: 262144,
-    maxCompletionTokens: 32768, // unverified
-    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Vision, LLM_IF_OAI_Json],
-    chatPrice: { input: 0.15, output: 0.60 },
-  },
+  // REMOVED: google/gemma-4-26b-a4b-it (delisted + 404 on use + off the rate card, 2026-08-31)
   {
     idPrefix: 'moonshotai/kimi-k2.7-code',
     label: 'Kimi K2.7 Code',
+    pubDate: '20260612',
     description: 'Moonshot Kimi K2.7 Code, agentic coding model with always-on reasoning. Served as NVIDIA NVFP4 (4-bit) quantization.',
     contextWindow: 262144,
     maxCompletionTokens: 131072, // unverified
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Vision, LLM_IF_OAI_Reasoning, LLM_IF_OAI_Json, LLM_IF_OAI_PromptCaching],
-    chatPrice: { input: 0.60, output: 3.00, cache: { cType: 'oai-ac', read: 0.12 } },
+    // no benchmark: no arena row for kimi-k2.7-code as of 2026-08-17
+    // chatPrice: not on the rate card as of 2026-09-14 (modular.com/pricing lists Kimi K2.5 0.60/3.00/0.12 and
+    // K2.6 0.85/3.50/0.16, no K2.7 row) - add when published
+  },
+  {
+    idPrefix: 'zai-org/glm-5.3',
+    label: 'GLM 5.3',
+    pubDate: '20260814', // = zai.models.ts 'glm-5.3'
+    description: 'Zhipu GLM-5.3, post-trained on the GLM-5.2 base for frontier coding and long-horizon agentic work, reasoning on by default (effort control), text-only. 192K context on the shared endpoint (native: 1M).',
+    contextWindow: 192000, // enforced by the shared endpoint (400 'exceeds the configured maximum context length of 192000 tokens', probed 2026-08-31)
+    maxCompletionTokens: 131072, // unverified
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning, LLM_IF_OAI_PromptCaching],
+    // reasoning_effort passthrough probed 2026-08-31 (n=1/arm, fixed prompt): 'none' = off (0 reasoning tokens),
+    // 'high' ~30, 'max' ~215 - the same none/high/max shape as GLM 5.2 below (default = on)
+    parameterSpecs: _PS_GlmEffort,
+    benchmark: { cbaElo: 1487 }, // lmarena: glm-5.3-max
+    chatPrice: { input: 1.40, output: 4.40, cache: { read: 0.26 } }, // modular.com/pricing 2026-08-31, same card as GLM 5.2
   },
   {
     idPrefix: 'z-ai/glm-5.2',
     label: 'GLM 5.2',
-    description: 'Zhipu GLM-5.2 open-weights coding/agentic MoE (754B, ~40B active), 1M context, default-on reasoning, text-only. Served as NVIDIA NVFP4 (4-bit) quantization with speculative decoding.',
-    contextWindow: 1048576,
+    pubDate: '20260616', // = zai.models.ts 'glm-5.2'
+    description: 'Zhipu GLM-5.2 open-weights coding/agentic MoE (753B, ~40B active), reasoning on by default (effort control), text-only. Served as NVIDIA NVFP4 (4-bit) quantization with speculative decoding, full 1M context.',
+    contextWindow: 1048576, // enforced by the shared endpoint (400 'exceeds the configured maximum context length of 1048576 tokens'); was 163840 until Sep 2026
     maxCompletionTokens: 131072, // unverified
     // no Vision (image_url REJECTED 400: text-only deployment) and no Json (json_object is clean
     // but json_schema strict emits template-token garbage inside valid JSON - probed 2026-08-14)
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning, LLM_IF_OAI_PromptCaching],
-    chatPrice: { input: 1.40, output: 4.40, cache: { cType: 'oai-ac', read: 0.26 } },
+    // reasoning_effort passthrough (generic dialect branch), ablated 2026-08-16 (n=17 on low/high/max/default, 9 elsewhere):
+    // 'none' = off (0 reasoning tokens, template marker dropped), low = medium = high (~520-750 tokens), xhigh = max = default
+    // (~1.1K, ~1.6x) - Z.ai's documented native mapping. Streams reasoning as delta.reasoning (not reasoning_content) - parser reads both.
+    parameterSpecs: _PS_GlmEffort,
+    benchmark: { cbaElo: 1471 }, // lmarena: glm-5.2-max
+    chatPrice: { input: 1.40, output: 4.40, cache: { read: 0.26 } },
   },
 ]);
 

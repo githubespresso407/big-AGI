@@ -2,12 +2,15 @@ import * as React from 'react';
 
 import type { SxProps } from '@mui/joy/styles/types';
 import { Box, Button } from '@mui/joy';
+
+import type { AutoBlocksHtmlRenderVariant } from '~/modules/blocks/AutoBlocksRenderer';
+import { HostedLinksProvider } from '~/modules/blocks/markdown/HostedLinksContext';
 import { ScaledTextBlockRenderer } from '~/modules/blocks/ScaledTextBlockRenderer';
 
 import type { ContentScaling, UIComplexityMode } from '~/common/app.theme';
 import type { DMessageRole } from '~/common/stores/chat/chat.message';
 import type { InterleavedFragment } from '~/common/stores/chat/hooks/useFragmentBuckets';
-import { DMessageContentFragment, DMessageFragmentId, isTextContentFragment, isTextPart, isVoidPlaceholderFragment } from '~/common/stores/chat/chat.fragments';
+import { DMessageContentFragment, DMessageFragmentId, isErrorContentFragment, isTextContentFragment, isTextPart, isVoidPlaceholderFragment } from '~/common/stores/chat/chat.fragments';
 import { Release } from '~/common/app.release';
 
 import type { ChatMessageTextPartEditState } from '../ChatMessage';
@@ -62,7 +65,7 @@ export function ContentFragments(props: {
   messageGeneratorLlmId?: string | null,
   optiAllowSubBlocksMemo?: boolean,
   disableMarkdownText: boolean,
-  showUnsafeHtmlCode?: boolean,
+  htmlRenderVariant?: AutoBlocksHtmlRenderVariant,
 
   textEditsState: ChatMessageTextPartEditState | null,
   setEditedText?: (fragmentId: DMessageFragmentId, value: string, applyNow: boolean) => void,
@@ -74,7 +77,6 @@ export function ContentFragments(props: {
   onFragmentReplace?: (fragmentId: DMessageFragmentId, newFragment: DMessageContentFragment) => void,
   onMessageDelete?: () => void,
 
-  onContextMenu?: (event: React.MouseEvent) => void;
   onDoubleClick?: (event: React.MouseEvent) => void;
 
 }) {
@@ -94,6 +96,9 @@ export function ContentFragments(props: {
     && props.contentFragments.length === 1
     // && props.noVoidFragments // not needed, we have all the interleaved fragments here
     && isVoidPlaceholderFragment(props.contentFragments[0]);
+
+  // input-transform notices are neutral infos: hidden (not removed) beside an error, where they'd read as its cause
+  const noticesYieldToError = props.contentFragments.some(isErrorContentFragment);
 
 
   // Content Fragments Edit Zero-State: button to create a new TextContentFragment
@@ -122,7 +127,7 @@ export function ContentFragments(props: {
   if (!props.showEmptyNotice && isEmpty)
     return null;
 
-  return <Box aria-label='message body' sx={(showDataStreamViz || isEditingText || (fromAssistant && props.blocksStretch)) ? _stretchLayoutSx : fromAssistant ? _startLayoutSx : _endLayoutSx}>
+  const body = <Box aria-label='message body' sx={(showDataStreamViz || isEditingText || (fromAssistant && props.blocksStretch)) ? _stretchLayoutSx : fromAssistant ? _startLayoutSx : _endLayoutSx}>
 
     {/* Empty Message Block - if empty */}
     {props.showEmptyNotice && (
@@ -167,6 +172,8 @@ export function ContentFragments(props: {
                 messagePendingIncomplete={!!props.messagePendingIncomplete}
                 zenMode={props.uiComplexityMode === 'minimal'}
                 contentScaling={props.contentScaling}
+                fitScreen={props.fitScreen}
+                isMobile={props.isMobile}
                 isLastFragment={isLastFragment}
                 onFragmentDelete={props.onFragmentDelete}
                 onFragmentReplace={props.onFragmentReplace}
@@ -183,6 +190,10 @@ export function ContentFragments(props: {
                 messagePendingIncomplete={!!props.messagePendingIncomplete}
                 showAsDataStreamViz={showDataStreamViz}
                 zenMode={props.uiComplexityMode === 'minimal'}
+                showNotices={
+                  props.uiComplexityMode !== 'minimal'
+                  && (!noticesYieldToError || part.pNoticeKind !== 'input-transform')
+                }
                 onFragmentDelete={props.messagePendingIncomplete ? undefined : props.onFragmentDelete}
               />
             );
@@ -335,18 +346,17 @@ export function ContentFragments(props: {
               key={fId}
               // ref={blocksRendererRef}
               textPartText={part.text}
-              setEditedText={props.setEditedText}
-              fragmentId={fId}
               messageRole={props.messageRole}
+              fragmentId={fId}
+              setEditedText={props.setEditedText}
               contentScaling={props.contentScaling}
               fitScreen={props.fitScreen}
               isMobile={props.isMobile}
+              inputAsWordsDiff={undefined}
               disableMarkdownText={props.disableMarkdownText}
-              // renderWordsDiff={wordsDiff || undefined}
-              showUnsafeHtmlCode={props.showUnsafeHtmlCode}
+              htmlRenderVariant={props.htmlRenderVariant}
               optiAllowSubBlocksMemo={!!props.optiAllowSubBlocksMemo}
               optiStreamingLastFragment={!!props.optiAllowSubBlocksMemo && isLastFragment && props.uiComplexityMode === 'minimal'}
-              onContextMenu={props.onContextMenu}
               onDoubleClick={props.onDoubleClick}
             />
           );
@@ -379,6 +389,7 @@ export function ContentFragments(props: {
               fragmentId={fId}
               messageGeneratorLlmId={props.messageGeneratorLlmId}
               contentScaling={props.contentScaling}
+              isEditingMessage={isEditingText}
               onFragmentDelete={props.onFragmentDelete}
               onFragmentReplace={props.onFragmentReplace}
             />
@@ -402,4 +413,7 @@ export function ContentFragments(props: {
       }
     }).filter(Boolean)}
   </Box>;
+
+  // links in the text resolve to this message's hosted-file blocks; no provider when there are none, so text-only messages pay nothing
+  return props.contentFragments.some(f => f.part.pt === 'hosted_resource') ? <HostedLinksProvider>{body}</HostedLinksProvider> : body;
 }

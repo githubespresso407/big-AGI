@@ -1,7 +1,7 @@
 import type { GeminiWire_API_Models_List } from '~/modules/aix/server/dispatch/wiretypes/gemini.wiretypes';
 
 import type { DModelParameterId } from '~/common/stores/llms/llms.parameters';
-import { LLM_IF_GEM_CodeExecution, LLM_IF_GEM_Interactions, LLM_IF_HOTFIX_NoStream, LLM_IF_HOTFIX_StripImages, LLM_IF_HOTFIX_StripSys0, LLM_IF_HOTFIX_Sys0ToUsr0, LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_PromptCaching, LLM_IF_OAI_Reasoning, LLM_IF_OAI_Vision, LLM_IF_Outputs_Audio, LLM_IF_Outputs_Image, LLM_IF_Outputs_NoText } from '~/common/stores/llms/llms.types';
+import { LLM_IF_GEM_CodeExecution, LLM_IF_GEM_Interactions, LLM_IF_HOTFIX_NoStream, LLM_IF_HOTFIX_StripImages, LLM_IF_HOTFIX_StripSys0, LLM_IF_HOTFIX_Sys0ToUsr0, LLM_IF_Inputs_Video, LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_PromptCaching, LLM_IF_OAI_Reasoning, LLM_IF_OAI_Vision, LLM_IF_Outputs_Audio, LLM_IF_Outputs_Image, LLM_IF_Outputs_NoText } from '~/common/stores/llms/llms.types';
 import { Release } from '~/common/app.release';
 
 import type { ModelDescriptionSchema, OrtVendorLookupResult } from '../llm.server.types';
@@ -18,7 +18,11 @@ const GEMINI_DEFAULT_TEMPERATURE = 1.0; // NOTE: Google deprecated the temperatu
 const geminiChatInterfaces: GeminiWire_API_Models_List.Model['supportedGenerationMethods'] = ['generateContent'];
 
 // unsupported interfaces
-const filterUnallowedNames = ['Legacy', 'Lyria']; // 'Lyria' also drops lyria-3-{clip,pro}-preview (2026-07: music generation via generateContent, audio output unsupported)
+const filterUnallowedNames = [
+  'Legacy',
+  'Lyria', // also drops lyria-3-{clip,pro}-preview (2026-07: music generation via generateContent, audio output unsupported)
+  'Transcribe', // gemini-3.5-transcribe(-live): STT for ASRx via the Interactions transcription surface (see asrx transcribe-gemini.ts) - its generateContent accepts and bills the audio but returns an EMPTY part (verified 2026-08-28), so it must not surface as a chat model
+];
 // const filterUnallowedInterfaces: GeminiWire_API_Models_List.Model['supportedGenerationMethods'] = [
 //   'generateAnswer',     // e.g. removes "models/aqa"
 //   'embedContent',       // e.g. removes "models/embedding-001"
@@ -30,7 +34,9 @@ const filterLyingModelNames: GeminiWire_API_Models_List.Model['name'][] = [
   // new symlinks that are too vague and high risk; let the user pick the correct model
   'models/gemini-pro-latest',
   'models/gemini-flash-latest',
+  'models/gemini-flash-latest-high-res-exp', // same displayName as the plain alias, routes to gemini-3.8-flash (verified 2026-09-02); would surface as an uncurated duplicate
   'models/gemini-flash-lite-latest',
+  'models/antigravity-preview-latest', // Interactions-only (generateContent 400s); the dated agents are curated, uncurated this would surface as a broken chat model
 ];
 
 // Not-found guards: ids the list API no longer returns and that hard-404 on generateContent (verified
@@ -42,6 +48,7 @@ const filterNotFoundModelNames: GeminiWire_API_Models_List.Model['name'][] = [
   'models/gemini-2.0-flash',
   'models/gemini-2.0-flash-001', // 404 as of 2026-07-22 (June 1, 2026 shutdown finally enforced)
   'models/gemini-3-pro-preview', // 404 as of 2026-07-22 (was silently routed to gemini-3.1-pro-preview since 2026-03-09)
+  'models/gemini-robotics-er-1.6-preview', // 404 as of 2026-08-31 (shutdown date enforced same-day; stale list replicas still flicker it)
 ];
 
 
@@ -72,41 +79,57 @@ const geminiExpFree: ModelDescriptionSchema['chatPrice'] = {
 };
 
 
-// Pricing based on https://ai.google.dev/gemini-api/docs/pricing (August 13, 2026)
+// Pricing based on https://ai.google.dev/gemini-api/docs/pricing (September 2, 2026)
 
-// NOTE(2027-01-01): 3.7/3.6 Flash introductory pricing expires December 31, 2026 - flip both consts
-// to the list prices in their comments (pricing page + latest-model page state the promo covers both)
+// NOTE(2027-01-01): 3.8/3.7/3.6 Flash introductory pricing expires December 31, 2026 - flip all three consts
+// to the list prices in their comments (pricing page + latest-model page state the promo covers all three)
+
+// Google Search grounding: $14 / 1K queries after 5,000 free per month, shared across the 3.x models
+const GEM_PRICE_TOOLS: NonNullable<ModelDescriptionSchema['chatPrice']>['tools'] = { webSearch: 14 };
+
+const gemini38FlashPricing: ModelDescriptionSchema['chatPrice'] = {
+  input: 0.75, // introductory through 2026-12-31, then $1.50 - same promo as 3.7/3.6 Flash; no per-modality split stated
+  output: 3.75, // including thinking tokens; $7.50 from 2027-01-01
+  cache: { read: 0.075 }, // $0.15 from 2027-01-01; storage $0.50/MTok-hour -> $1.00 (not tracked here)
+  tools: GEM_PRICE_TOOLS,
+};
 
 const gemini37FlashPricing: ModelDescriptionSchema['chatPrice'] = {
   input: 0.75, // introductory through 2026-12-31, then $1.50; no per-modality split stated
   output: 3.75, // including thinking tokens; $7.50 from 2027-01-01
-  cache: { cType: 'oai-ac', read: 0.075 }, // $0.15 from 2027-01-01; storage $0.50/MTok-hour -> $1.00 (not tracked here)
+  cache: { read: 0.075 }, // $0.15 from 2027-01-01; storage $0.50/MTok-hour -> $1.00 (not tracked here)
+  tools: GEM_PRICE_TOOLS,
 };
 
 const gemini36FlashPricing: ModelDescriptionSchema['chatPrice'] = {
   input: 0.75, // introductory through 2026-12-31 (extended to 3.6 alongside the 3.7 launch), then $1.50; no per-modality split stated
   output: 3.75, // including thinking tokens; $7.50 from 2027-01-01 - list price stays cheaper than 3.5 Flash's $9.00
-  cache: { cType: 'oai-ac', read: 0.075 }, // $0.15 from 2027-01-01; storage $0.50/MTok-hour -> $1.00 (not tracked here)
+  cache: { read: 0.075 }, // $0.15 from 2027-01-01; storage $0.50/MTok-hour -> $1.00 (not tracked here)
+  tools: GEM_PRICE_TOOLS,
 };
 
 const gemini35FlashPricing: ModelDescriptionSchema['chatPrice'] = {
   input: 1.50, // text/image/video; cache storage $1.00/MTok-hour (not tracked here)
   output: 9.00, // including thinking tokens
-  cache: { cType: 'oai-ac', read: 0.15 },
+  cache: { read: 0.15 },
+  tools: GEM_PRICE_TOOLS,
 };
 
 const gemini35FlashLitePricing: ModelDescriptionSchema['chatPrice'] = {
   input: 0.30, // all modalities, no per-modality split
   output: 2.50, // including thinking tokens
-  cache: { cType: 'oai-ac', read: 0.03 },
+  cache: { read: 0.03 },
+  tools: GEM_PRICE_TOOLS,
 };
 
-// Gemini Omni Flash Preview (video generation), paid-tier only. Official (2026-06/07):
+// Gemini Omni Flash (video generation), paid-tier only. Official (2026-06/07):
 //  - input  $1.50/MTok (text / image / video / audio)
 //  - output $9.00/MTok text (incl. thinking) OR $17.50/MTok video (5,792 tok/s of 720p, ~$0.10/s)
 // Our pricing model has a single output rate, not per-modality. A video-gen model's output is ~98%
 // video tokens (verified 2026-07-01: 57,920 of 58,948 output tokens were video), so we price output at
 // the VIDEO rate - the dominant modality. This slightly over-charges the tiny text/thinking slice.
+// Omni 1.1 (2026-08-27) adds resolution tiers (360p $0.03/s draft, 1080p $0.15/s, 4K $0.30/s); 720p
+// stays $0.10/s, so this single-rate approximation is unchanged at the default resolution.
 const geminiOmniPricing: ModelDescriptionSchema['chatPrice'] = {
   input: 1.50,
   output: 17.50,
@@ -115,7 +138,8 @@ const geminiOmniPricing: ModelDescriptionSchema['chatPrice'] = {
 const gemini31FlashLitePricing: ModelDescriptionSchema['chatPrice'] = {
   input: 0.25, // text/image/video; audio is $0.50 but we don't differentiate yet
   output: 1.50,
-  cache: { cType: 'oai-ac', read: 0.025 }, // text/image/video; audio is $0.05 but we don't differentiate yet
+  cache: { read: 0.025 }, // text/image/video; audio is $0.05 but we don't differentiate yet
+  tools: GEM_PRICE_TOOLS,
 };
 
 const gemini31FlashImagePricing: ModelDescriptionSchema['chatPrice'] = {
@@ -136,7 +160,8 @@ const gemini31FlashLiteImagePricing: ModelDescriptionSchema['chatPrice'] = {
 const gemini30ProPricing: ModelDescriptionSchema['chatPrice'] = {
   input: [{ upTo: 200000, price: 2.00 }, { upTo: null, price: 4.00 }],
   output: [{ upTo: 200000, price: 12.00 }, { upTo: null, price: 18.00 }],
-  cache: { cType: 'oai-ac', read: [{ upTo: 200000, price: 0.20 }, { upTo: null, price: 0.40 }] },
+  cache: { read: [{ upTo: 200000, price: 0.20 }, { upTo: null, price: 0.40 }] },
+  tools: GEM_PRICE_TOOLS,
 };
 
 const gemini30ProImagePricing: ModelDescriptionSchema['chatPrice'] = {
@@ -150,19 +175,20 @@ const gemini30ProImagePricing: ModelDescriptionSchema['chatPrice'] = {
 const gemini30FlashPricing: ModelDescriptionSchema['chatPrice'] = {
   input: 0.50, // text/image/video; audio is $1.00 but we don't differentiate yet
   output: 3.00,
-  cache: { cType: 'oai-ac', read: 0.05 }, // text/image/video; audio is $0.10 but we don't differentiate yet
+  cache: { read: 0.05 }, // text/image/video; audio is $0.10 but we don't differentiate yet
+  tools: GEM_PRICE_TOOLS,
 };
 
 const gemini25ProPricing: ModelDescriptionSchema['chatPrice'] = {
   input: [{ upTo: 200000, price: 1.25 }, { upTo: null, price: 2.50 }],
   output: [{ upTo: 200000, price: 10.00 }, { upTo: null, price: 15.00 }],
-  cache: { cType: 'oai-ac', read: [{ upTo: 200000, price: 0.125 }, { upTo: null, price: 0.25 }] },
+  cache: { read: [{ upTo: 200000, price: 0.125 }, { upTo: null, price: 0.25 }] },
 };
 
 const gemini25FlashPricing: ModelDescriptionSchema['chatPrice'] = {
   input: 0.30, // text/image/video; audio is $1.00 but we don't differentiate yet
   output: 2.50, // including thinking tokens
-  cache: { cType: 'oai-ac', read: 0.03 }, // text/image/video; audio is $0.10 but we don't differentiate yet
+  cache: { read: 0.03 }, // text/image/video; audio is $0.10 but we don't differentiate yet
 };
 
 // REMOVED: gemini25FlashPreviewPricing (was same as gemini25FlashPricing, no longer used)
@@ -170,7 +196,7 @@ const gemini25FlashPricing: ModelDescriptionSchema['chatPrice'] = {
 const gemini25FlashLitePricing: ModelDescriptionSchema['chatPrice'] = {
   input: 0.10, // text/image/video; audio is $0.30 but we don't differentiate yet
   output: 0.40, // including thinking tokens
-  cache: { cType: 'oai-ac', read: 0.01 }, // text/image/video; audio is $0.03 but we don't differentiate yet
+  cache: { read: 0.01 }, // text/image/video; audio is $0.03 but we don't differentiate yet
 };
 
 // REMOVED: gemini25FlashLitePreviewPricing (preview shut down, was same as gemini25FlashLitePricing)
@@ -191,32 +217,29 @@ const gemini31FlashTTSPricing: ModelDescriptionSchema['chatPrice'] = {
   // output: 20.00, // AUDIO - not ready for audio output yet (as of Apr 22, 2026)
 };
 
-const geminiRoboticsER16Pricing: ModelDescriptionSchema['chatPrice'] = {
-  input: 1.00, // text/image/video; audio is $2.00 but we don't differentiate yet
-  output: 5.00,
-};
+// REMOVED: geminiRoboticsER16Pricing (ER 1.6 shut down August 31, 2026)
 
 const geminiRoboticsER2Pricing: ModelDescriptionSchema['chatPrice'] = {
   input: 2.00, // flat rate for text/image/video/audio (no audio split, unlike ER 1.6); 2x over ER 1.6
   output: 10.00, // including thinking tokens
-  cache: { cType: 'oai-ac', read: 0.20 }, // caching is new vs ER 1.6; storage $1.00/MTok-hour (not tracked here)
+  cache: { read: 0.20 }, // caching is new vs ER 1.6; storage $1.00/MTok-hour (not tracked here)
 };
 
 // REMOVED: gemini20FlashLivePricing (model shut down December 9, 2025)
 // REMOVED: gemini20FlashPricing, gemini20FlashLitePricing (2.0 Flash family defs expunged 2026-08-13, gone from the list API)
 
 
-const IF_25 = [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning, LLM_IF_GEM_CodeExecution, LLM_IF_OAI_PromptCaching];
+const IF_25 = [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning, LLM_IF_GEM_CodeExecution, LLM_IF_OAI_PromptCaching, LLM_IF_Inputs_Video];
 const IF_30 = [...IF_25]; // Note: Gemini 3 Developer Guide recommends temperature=1.0, which is now set as the default via initialTemperature
 
-// Gemini Thinking Control (as of 2026-08-13):
+// Gemini Thinking Control (as of 2026-09-02):
 // - Gemini 3 models use `thinkingLevel` (llmVndGemEffort) - NOT thinkingBudget.
-//   Levels are per-model (docs thinking page table): 3.7 Flash=['low','medium','high'] (default 'medium'; 'minimal' 400s),
+//   Levels are per-model (docs thinking page table): 3.8/3.7 Flash=['low','medium','high'] (default 'medium'; 'minimal' 400s),
 //   3.6/3.5 Flash + 3.5 Flash-Lite=['minimal','low','medium','high'] (Flash default 'medium'), 3.1 Pro/3 Pro=['low','medium','high'] (default 'high').
 //   Pro does not support disabling thinking. Flash's 'minimal' does not guarantee thinking is off.
 // - Gemini 2.5 models use `thinkingBudget` (llmVndGeminiThinkingBudget) - NOT thinkingLevel.
 //   Budget=0 disables thinking (Flash/Flash-Lite only; Pro cannot disable). Undefined = auto.
-// Note: thinkingBudget is ACCEPTED on-wire by Gemini 3 models (3.6/3.7 verified 2026-08-13; 3.6 still 400'd it on
+// Note: thinkingBudget is ACCEPTED on-wire by Gemini 3 models (3.6/3.7 verified 2026-08-13, 3.8 on 2026-09-02; 3.6 still 400'd it on
 // 2026-07-22) but NOT honored as a budget: on 3.7, budget=0 does NOT disable thinking (~75 thought tokens) and values
 // bucket to level-like behavior (0/512 -> ~low, 32768 -> ~high) - a compat shim. The docs prescribe thinkingLevel
 // (the thinking page no longer documents thinkingBudget at all; latest-model migration: "Replace thinking_budget with
@@ -238,6 +261,28 @@ type _GeminiModelDef = {
 
 const _knownGeminiModels = llmsDefineModels<_GeminiModelDef>()([
 
+  /// Generation 3.8
+
+  // 3.8 Flash (Stable) - Released September 2, 2026; successor to 3.7 Flash at the same price (intro through 2026-12-31)
+  // Verified live 2026-09-02 (+ sweep): thinkingLevel ['low','medium','high'], 'minimal' 400s; thinkingBudget accepted
+  // on-wire but not exposed (budget=0 == 'low', same as 3.7); fn/search/url-context/code-exec/media-res/JSON schema/SSE OK
+  // '3.8 Flash Cyber' sibling: not on the API list (404 by id), Fairwind-gated
+  {
+    id: 'models/gemini-3.8-flash',
+    labelOverride: 'Gemini 3.8 Flash',
+    pubDate: '20260902',
+    chatPrice: gemini38FlashPricing,
+    interfaces: IF_30,
+    parameterSpecs: [
+      { paramId: 'llmVndGemEffort', enumValues: ['low', 'medium', 'high'] }, // no 'minimal' (docs + live 400); default 'medium' per docs
+      { paramId: 'llmVndGeminiMediaResolution' },
+      { paramId: 'llmVndGeminiCodeExecution' },
+      { paramId: 'llmVndGeminiGoogleSearch' },
+    ],
+    benchmark: { cbaElo: 1494 }, // gemini-3.8-flash-high (LMArena 2026-09-02, preliminary, CI +/-9)
+  },
+
+
   /// Generation 3.7
 
   // 3.7 Flash (Stable) - Released August 13, 2026 - Google's "most intelligent workhorse model yet for
@@ -258,31 +303,13 @@ const _knownGeminiModels = llmsDefineModels<_GeminiModelDef>()([
       { paramId: 'llmVndGeminiCodeExecution' },
       { paramId: 'llmVndGeminiGoogleSearch' },
     ],
-    benchmark: { cbaElo: 1490 }, // gemini-3.7-flash-high (LMArena 2026-08-13, preliminary, CI +/-8)
+    benchmark: { cbaElo: 1491 }, // gemini-3.7-flash-high (LMArena 2026-09-02, preliminary, CI +/-8)
   },
 
-  // 3.7 Flash Video Understanding (EAP) - surfaced August 14, 2026 - "[Confidential]" Early Access Program
-  // checkpoint of 3.7 Flash (same version string '3.7-flash-08-2026') tuned for video understanding.
-  // EAP-gated: the list API returns it only for enrolled keys (a DEV 'stale' log on other keys is expected).
-  // Verified live 2026-08-14: API surface identical to base 3.7 Flash - thinkingLevel ['low','medium','high']
-  // ('minimal' 400s), fn/search/code-exec/media-res/JSON-schema/streaming all work, thinking on by default;
-  // video input verified (YouTube fileData + videoMetadata.fps; tokenization identical to base: 19s clip
-  // = 1,584 tok default, 6,120 at fps=5); billed (serviceTier 'standard'), no published price - assumed 3.7 Flash rates
-  {
-    id: 'models/gemini-3.7-flash-video-understanding-eap',
-    labelOverride: 'Gemini 3.7 Flash Video Understanding',
-    pubDate: '20260814',
-    isPreview: true,
-    chatPrice: gemini37FlashPricing,
-    interfaces: IF_30,
-    parameterSpecs: [
-      { paramId: 'llmVndGemEffort', enumValues: ['low', 'medium', 'high'] }, // no 'minimal' (live 400, same as base 3.7)
-      { paramId: 'llmVndGeminiMediaResolution' },
-      { paramId: 'llmVndGeminiCodeExecution' },
-      { paramId: 'llmVndGeminiGoogleSearch' },
-    ],
-    benchmark: { cbaElo: 1490 - 1 }, // -1 (deprio the specialized variant) + gemini-3.7-flash-high
-  },
+  // REMOVED: models/gemini-3.7-flash-video-understanding-eap - EAP checkpoint of 3.7 Flash tuned for video
+  // understanding, key-gated when surfaced 2026-08-14; unlisted and hard-404 (GET + generateContent) on the same
+  // key as of 2026-08-17. Deliberately NOT deny-listed: a re-listing shows up as a DEV 'unknown model (add)', and
+  // its API surface was identical to base 3.7 Flash, so the def can be re-created by copying the 3.7 Flash entry.
 
 
   /// Generation 3.6
@@ -303,7 +330,7 @@ const _knownGeminiModels = llmsDefineModels<_GeminiModelDef>()([
       { paramId: 'llmVndGeminiCodeExecution' },
       { paramId: 'llmVndGeminiGoogleSearch' },
     ],
-    benchmark: { cbaElo: 1485 }, // gemini-3.6-flash (LMArena 2026-08-06)
+    benchmark: { cbaElo: 1484 }, // gemini-3.6-flash-high (LMArena 2026-08-17)
   },
 
 
@@ -340,7 +367,7 @@ const _knownGeminiModels = llmsDefineModels<_GeminiModelDef>()([
       { paramId: 'llmVndGeminiCodeExecution' },
       { paramId: 'llmVndGeminiGoogleSearch' },
     ],
-    benchmark: { cbaElo: 1459 }, // gemini-3.5-flash-lite (LMArena 2026-08-06)
+    benchmark: { cbaElo: 1458 }, // gemini-3.5-flash-lite (LMArena 2026-08-17)
   },
 
 
@@ -362,7 +389,7 @@ const _knownGeminiModels = llmsDefineModels<_GeminiModelDef>()([
       { paramId: 'llmVndGeminiGoogleSearch' },
       // { paramId: 'llmVndGeminiComputerUse' }, // we don't have the logic to handle this yet
     ],
-    benchmark: { cbaElo: 1487 }, // gemini-3.1-pro-preview (LMArena 2026-08-06)
+    benchmark: { cbaElo: 1486 }, // gemini-3.1-pro-preview (LMArena 2026-08-17)
   },
   // 3.1 Pro (Preview) - Custom Tools variant - Released February 19, 2026
   // Better at prioritizing custom tools for users building with a mix of bash and tools
@@ -380,7 +407,7 @@ const _knownGeminiModels = llmsDefineModels<_GeminiModelDef>()([
       { paramId: 'llmVndGeminiCodeExecution' },
       { paramId: 'llmVndGeminiGoogleSearch' },
     ],
-    benchmark: { cbaElo: 1487 - 1 }, // -1 (deprio this variant) + gemini-3.1-pro-preview
+    benchmark: { cbaElo: 1486 - 1 }, // -1 (deprio this variant) + gemini-3.1-pro-preview
   },
 
   // 3.1 Flash Image (Stable / GA) - Released May 28, 2026 (graduated from preview)
@@ -596,17 +623,35 @@ const _knownGeminiModels = llmsDefineModels<_GeminiModelDef>()([
 
   // Managed Agents - require the Interactions API (agent path, not generateContent)
 
-  // Gemini Omni Flash Preview - Released June 30, 2026. EXPERIMENTAL video generation.
+  // Gemini Omni 1.1 Flash - Released August 27, 2026. Video generation, the Omni family upgrade:
+  // scenes extend in 10s increments to a cumulative 40s (was 3-10s), <=3s of style-reference footage
+  // as input, per-resolution rates (360p draft .. 4K). Same Interactions MODEL-path dispatch as the
+  // 1.0 preview below (the adapter's `isModelOmni` gate matches 'omni' in the id).
+  {
+    id: 'models/gemini-omni-1.1-flash',
+    labelOverride: 'Gemini Omni 1.1 Flash (video)',
+    pubDate: '20260827',
+    chatPrice: geminiOmniPricing, // output at the 720p default video rate - see the const note for the 1.1 resolution tiers
+    interfaces: [
+      LLM_IF_HOTFIX_Sys0ToUsr0,
+      LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_GEM_Interactions,
+    ],
+    benchmark: undefined, // video generation, not benchmarkable on standard tests
+  },
+
+  // Gemini Omni Flash Preview - Released June 30, 2026; DEPRECATED: shutdown September 30, 2026 (announced with the Omni 1.1 GA). EXPERIMENTAL video generation.
   // Text/image -> a short 720p video (3-10s, with baked-in audio). Rides the Interactions API but on the
   // MODEL path (not an agent): the adapter's `isOmni` gate sends `model` + omits store/background, and the
   // parser emits the inline mp4 as an EPHEMERAL video (played in-memory, NOT saved). Audio/video INPUT are
   // unsupported (verified 2026-07-01: "Audio input modality is not enabled"). Vision (image) input is used
   // for image-to-video. Output is billed by tokens (~58k for a short clip). See kb/modules/LLM-gemini-interactions.md.
   {
+    hidden: true, // superseded by gemini-omni-1.1-flash (2026-08-27) - kept resolvable for users who already selected it
     id: 'models/gemini-omni-flash-preview',
     labelOverride: 'Gemini Omni Flash Preview (video)',
     pubDate: '20260630',
     isPreview: true,
+    deprecated: '2026-09-30',
     chatPrice: geminiOmniPricing, // paid-tier only: input $1.50, output priced at the video rate $17.50/MTok (~$0.10/s of 720p)
     interfaces: [
       LLM_IF_HOTFIX_Sys0ToUsr0, //
@@ -620,23 +665,34 @@ const _knownGeminiModels = llmsDefineModels<_GeminiModelDef>()([
     benchmark: undefined, // video generation, not benchmarkable on standard tests
   },
 
-  // Antigravity Agent Preview - Released May 19, 2026
-  // General-purpose managed agent: powered by Gemini 3.7 Flash by default (docs 2026-08-13; default moved
-  // 3.5 -> 3.6 on 2026-07-28, -> 3.7 on 2026-08-13; selectable via agent_config.model, which we don't send),
-  // runs inside a Google-hosted Linux sandbox with default tools (code_execution, google_search, url_context).
-  // 1M context (compacted at ~135k), 64K output. Sandbox compute is not billed during the preview. We send
-  // `environment: "remote"` (fresh sandbox per run) and intentionally omit `background` (upstream
-  // rejects background=true on this agent). See gemini.interactionsCreate.ts for the request shape.
+  // Antigravity Agent Preview (09-2026) - Released Sep 17, 2026; replaces 05-2026
+  // General-purpose managed agent: powered by Gemini 3.8 Flash by default (selectable via agent_config.model, which we don't send),
+  // runs inside a Google-hosted Linux sandbox with default tools (code_execution, google_search, url_context) plus file tools with
+  // PascalCase params (write_to_file, replace_file_content, view_file, list_dir, find_by_name, grep_search). Interactions-only
+  // (generateContent 400s). 1M context (compacted at ~135k), 64K output. Sandbox compute is not billed during the preview.
+  // We send `environment: "remote"` (fresh sandbox per run) and `background: false`. See gemini.interactionsCreate.ts for the request shape.
   // Docs: https://ai.google.dev/gemini-api/docs/antigravity-agent
   {
+    id: 'models/antigravity-preview-09-2026',
+    labelOverride: 'Antigravity Agent Preview (2026-09)',
+    pubDate: '20260914', // first seen on the list API; announced 2026-09-17
+    isPreview: true,
+    chatPrice: gemini38FlashPricing, // PAYG on underlying tokens - default model is gemini-3.8-flash; tool/compute not billed during preview
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Reasoning, LLM_IF_GEM_Interactions],
+    // No per-model parameters yet - default tool set is enabled implicitly. Future: a tools-allowlist parameter to restrict the default set.
+    benchmark: undefined, // Agent harness, not benchmarkable on standard tests
+  },
+
+  // Antigravity Agent Preview (05-2026) - Released May 19, 2026; DEPRECATED: shutdown October 5, 2026 (replaced by 09-2026)
+  {
+    hidden: true, // superseded by antigravity-preview-09-2026 - kept resolvable for users who already selected it until shutdown
     id: 'models/antigravity-preview-05-2026',
     labelOverride: 'Antigravity Agent Preview (2026-05)',
     pubDate: '20260519',
     isPreview: true,
-    chatPrice: gemini37FlashPricing, // PAYG on underlying tokens - default model is gemini-3.7-flash as of 2026-08-13; tool/compute not billed during preview
+    deprecated: '2026-10-05',
+    chatPrice: gemini38FlashPricing, // PAYG on underlying tokens - default model is gemini-3.8-flash; tool/compute not billed during preview
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Reasoning, LLM_IF_GEM_Interactions],
-    // No per-model parameters yet - default tool set is enabled implicitly. Future: expose env handle
-    // reuse for stateful sessions, or a tools-allowlist parameter to restrict the default set.
     benchmark: undefined, // Agent harness, not benchmarkable on standard tests
   },
 
@@ -750,20 +806,7 @@ const _knownGeminiModels = llmsDefineModels<_GeminiModelDef>()([
     benchmark: undefined, // Robotics model, not benchmarkable on standard tests
   },
 
-  // Gemini Robotics-ER 1.6 Preview - Released April 14, 2026 - DEPRECATED: shutdown August 31, 2026 (still live as of July 31, 2026)
-  // Enhanced embodied reasoning with instrument reading and improved spatial reasoning; superseded by Robotics-ER 2
-  {
-    id: 'models/gemini-robotics-er-1.6-preview',
-    labelOverride: 'Gemini Robotics-ER 1.6 Preview',
-    pubDate: '20260414',
-    isPreview: true,
-    deprecated: '2026-08-31',
-    chatPrice: geminiRoboticsER16Pricing,
-    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning],
-    parameterSpecs: [{ paramId: 'llmVndGeminiThinkingBudget' }],
-    benchmark: undefined, // Robotics model, not benchmarkable on standard tests
-  },
-
+  // REMOVED: models/gemini-robotics-er-1.6-preview (shutdown August 31, 2026, enforced same-day: unlisted + hard-404 on generateContent; superseded by Robotics-ER 2)
   // REMOVED: models/gemini-robotics-er-1.5-preview (shutdown April 30, 2026; gone from the list API entirely as of 2026-08-13)
 
   // 2.5 Flash Image
@@ -784,6 +827,35 @@ const _knownGeminiModels = llmsDefineModels<_GeminiModelDef>()([
   // - models/gemini-2.5-flash-preview-04-17 (superseded by 05-20 version)
   // - models/gemini-2.5-flash-preview-04-17-thinking (Cursor variant, superseded)
 
+
+  // 3.8 Flash TTS / 3.8 Flash Lite TTS - SPECULATIVE: listed by the API for ~2h on 2026-09-22, then pulled (404 by id); no
+  // announcement or pricing. Defined ahead so a re-listing is usable at once instead of surfacing with the default chat
+  // interfaces (streaming + system prompt, which TTS rejects). Interfaces mirror 3.1 Flash TTS, verified end-to-end on
+  // 3.1 only (2026-09-22: audio-only request, no system instruction, PCM -> WAV). TODO(2026-11): drop if still unreleased.
+  {
+    id: 'models/gemini-3.8-flash-tts',
+    labelOverride: 'Gemini 3.8 Flash TTS',
+    pubDate: '20260922', // first seen on the list API
+    interfaces: [
+      LLM_IF_OAI_Chat, LLM_IF_OAI_Vision,
+      LLM_IF_Outputs_Audio, LLM_IF_Outputs_NoText,
+      LLM_IF_HOTFIX_StripSys0, // TTS: no system instruction
+      LLM_IF_HOTFIX_NoStream, // TTS: no streaming - use generateContent instead
+    ],
+    benchmark: undefined, // TTS models are not benchmarkable
+  },
+  {
+    id: 'models/gemini-3.8-flash-lite-tts',
+    labelOverride: 'Gemini 3.8 Flash Lite TTS',
+    pubDate: '20260922', // first seen on the list API
+    interfaces: [
+      LLM_IF_OAI_Chat, LLM_IF_OAI_Vision,
+      LLM_IF_Outputs_Audio, LLM_IF_Outputs_NoText,
+      LLM_IF_HOTFIX_StripSys0, // TTS: no system instruction
+      LLM_IF_HOTFIX_NoStream, // TTS: no streaming - use generateContent instead
+    ],
+    benchmark: undefined, // TTS models are not benchmarkable
+  },
 
   // 3.1 Flash TTS Preview - Released April 15, 2026
   // Cost-efficient, expressive, and steerable text-to-speech model
@@ -822,6 +894,7 @@ const _knownGeminiModels = llmsDefineModels<_GeminiModelDef>()([
   // REMOVED MODELS - we do not support Native Audio / Live API models:
   // - models/gemini-3.5-live-translate-preview (Live API, real-time translation)
   // - models/gemini-3.1-flash-live-preview (Live API, released March 26, 2026)
+  // - models/gemini-robotics-er-2-streaming-preview (bidiGenerateContent only, 400s on generateContent - verified 2026-09-02)
   // - models/gemini-2.5-flash-native-audio-latest / -preview-09-2025 / -preview-12-2025
   // REMOVED MODELS (old dialog models superseded by native audio preview):
   // - models/gemini-2.5-flash-preview-native-audio-dialog
@@ -939,15 +1012,15 @@ const _knownGeminiModels = llmsDefineModels<_GeminiModelDef>()([
 
   /// Media Generation Models - NOTE: THESE ARE FILTERED OUT (!) - but here anyway for reference
 
-  // LISTED BUT FILTERED (as of 2026-07-22, no generateContent chat path or name-filtered):
-  // - models/imagen-4.0-{generate,ultra-generate,fast-generate}-001 (predict only)
+  // LISTED BUT FILTERED (as of 2026-08-17, no generateContent chat path or name-filtered):
   // - models/veo-3.1-{generate,fast-generate,lite-generate}-preview (predictLongRunning only)
   // - models/lyria-3-{clip,pro}-preview (music generation - DOES expose generateContent, dropped by the 'Lyria' name filter)
-  // - models/gemini-embedding-2, models/gemini-embedding-2-preview (embedContent only)
+  // - models/gemini-embedding-{001,2,2-preview} (embedContent only)
 
   // REMOVED MODELS (no longer returned by API as of Nov 20, 2025):
   // - models/imagen-3.0-generate-002 (Imagen 3 image generation - replaced by Nano Banana models)
   // - models/veo-2.0-generate-001
+  // REMOVED: models/imagen-4.0-{generate,ultra-generate,fast-generate}-001 (shut down August 17, 2026 -> gemini-3.1-flash-image)
 
 ]);
 
@@ -1005,6 +1078,9 @@ const _sortOderIdPrefix: string[] = [
   // speculative: sort a future Gemini 4 family above everything the day it appears (both id dialects)
   'models/gemini-4-',
   'models/gemini-4.',
+  'models/gemini-3.8-flash',
+  'models/gemini-3.8-',
+  'models/gemini-3.8',
   'models/gemini-3.7-flash',
   'models/gemini-3.7-',
   'models/gemini-3.7',
@@ -1017,7 +1093,8 @@ const _sortOderIdPrefix: string[] = [
   'models/gemini-3.5',
   'models/gemini-3.1-pro-preview',
   'models/gemini-3.1-pro-preview-customtools',
-  'models/gemini-omni-flash-preview', // display: after the 3.1 Pro models, before Nano Banana 2 (this list, not the _knownGeminiModels order, drives display sort - geminiSortModels)
+  'models/gemini-omni-1.1-flash',
+  'models/gemini-omni-flash-preview',
   'models/gemini-3.1-flash-image',
   'models/gemini-3.1-flash-image-preview',
   'models/gemini-3.1-flash-lite-image',

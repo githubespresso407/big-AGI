@@ -5,7 +5,7 @@ import { FormControl, FormHelperText, Input, Option, Select, Typography } from '
 import KeyIcon from '@mui/icons-material/Key';
 import SearchIcon from '@mui/icons-material/Search';
 
-import { getBackendCapabilities } from '~/modules/backend/store-backend-capabilities';
+import { hasServerConf } from '~/common/app.serverconf';
 import { isValidJinaApiKey, useJinaStore } from '~/modules/jina/store-module-jina';
 import { isValidExaApiKey, useExaStore } from '~/modules/exa/store-module-exa'; // [Exa patch]
 
@@ -21,7 +21,7 @@ import { useGoogleSearchStore } from './store-module-google';
 export function GoogleSearchSettings() {
 
   // external state
-  const backendHasGoogle = getBackendCapabilities().hasGoogleCustomSearch;
+  const backendHasGoogle = hasServerConf('hasGoogleCustomSearch');
   const { googleCloudApiKey, setGoogleCloudApiKey, googleCSEId, setGoogleCSEId, restrictToDomain, setRestrictToDomain } = useGoogleSearchStore(useShallow(state => ({
     googleCloudApiKey: state.googleCloudApiKey, setGoogleCloudApiKey: state.setGoogleCloudApiKey,
     googleCSEId: state.googleCSEId, setGoogleCSEId: state.setGoogleCSEId,

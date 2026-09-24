@@ -88,19 +88,25 @@ export const tooltipMetricsGridSx: SxProps = {
 
 
 /** Whole message background color, based on the message role and state */
-export function messageBackground(messageRole: DMessageRole | string, userCommand: 'draw' | 'react' | false, wasEdited: boolean, isAssistantIssue: boolean): string {
+export function messageBackground(messageRole: DMessageRole | string, userCommand: 'draw' | 'react' | false, wasEdited: boolean, isAssistantIssue: boolean, isAssistantOutOfTokens: boolean): string {
   switch (messageRole) {
     case 'user':
       return userCommand === 'draw' ? 'warning.softActiveBg'
         : userCommand === 'react' ? 'success.softHoverBg'
           : 'primary.plainHoverBg'; // was .background.level1
     case 'assistant':
-      return isAssistantIssue ? 'danger.softBg' : 'background.surface';
+      const issueColor = messageIssueColor(isAssistantIssue, isAssistantOutOfTokens);
+      return issueColor ? `${issueColor}.softBg` : 'background.surface';
     case 'system':
       return wasEdited ? 'warning.softHoverBg' : 'neutral.softBg';
     default:
       return '#ff0000';
   }
+}
+
+/** Issue state -> Joy palette key: errors are danger, out-of-tokens is warning. Chat backgrounds, Beam cards and notices all color from this. */
+export function messageIssueColor(hasError: boolean, isOutOfTokens: boolean): 'danger' | 'warning' | undefined {
+  return hasError ? 'danger' : isOutOfTokens ? 'warning' : undefined;
 }
 
 
@@ -242,7 +248,7 @@ export function useMessageAvatarLabel(
         label: prettyName,
         tooltip: (!created || complexity === 'minimal') ? null : (
           <Box sx={tooltipSx}>
-            <TimeAgo date={created} formatter={(value: number, unit: string, _suffix: string) => `Thinking for ${value} ${unit}${value > 1 ? 's' : ''}...`} />
+            <TimeAgo date={created} formatter={(value: number, unit: string, _suffix: string) => !value ? 'Thinking...' : `Thinking for ${value} ${unit}${value > 1 ? 's' : ''}...`} />
             {liveMetrics}
           </Box>
         ),
@@ -263,9 +269,18 @@ export function useMessageAvatarLabel(
     const metrics = generator.metrics ? prettyMessageMetrics(generator.metrics, complexity) : null;
     const stopReason = generator.tokenStopReason ? prettyTokenStopReason(generator.tokenStopReason, complexity) : null;
 
+    // aix label: in Extra mode, the routed infra provider (e.g. OpenRouter routing) shows inline - it explains
+    // per-message cost/speed variance without opening the tooltip
+    const infraLabel = complexity === 'extra' ? generator.providerInfraLabel : undefined;
+    const showStopReason = !!stopReason && complexity !== 'minimal';
+
     // aix tooltip: more details
     return {
-      label: (stopReason && complexity !== 'minimal') ? <>{prettyName} <small>({stopReason})</small></> : prettyName,
+      label: (infraLabel || showStopReason) ? <>
+        {prettyName}
+        {infraLabel && <> <small>· via {infraLabel}</small></>}
+        {showStopReason && <> <small>({stopReason})</small></>}
+      </> : prettyName,
       tooltip: complexity === 'minimal' ? null : (
         <Box sx={tooltipSx}>
           {VendorIcon ? <Box sx={tooltipIconContainerSx}><VendorIcon />{generator.name}</Box> : <div>{generator.name}</div>}
@@ -288,10 +303,21 @@ export function prettyMessageMetrics(metrics: DMessageGenerator['metrics'], uiCo
   if (!metrics) return null;
 
   const showWaitingTime = metrics?.dtStart !== undefined && (uiComplexityMode === 'extra' || metrics.dtStart >= 10000);
-  const showSpeedSection = uiComplexityMode !== 'minimal' && (showWaitingTime || metrics?.vTOutInner !== undefined);
-  const showTimeSection = uiComplexityMode !== 'minimal' && !!metrics?.dtAll;
+  // no first-token mark (non-streaming): the end-to-end rate stands in, labeled
+  const vTOutOverall = (metrics.vTOutInner === undefined && metrics.dtStart === undefined && metrics.TOut && metrics.dtAll)
+    ? metrics.TOut / (metrics.dtAll / 1000) : undefined;
+  const showSpeedSection = showWaitingTime || metrics?.vTOutInner !== undefined || vTOutOverall !== undefined;
+  const showTimeSection = !!metrics?.dtAll;
+  // stopped or failed: no vendor-terminated stream, so no dtAll; the client wall clock stands in, labeled
+  const showWallTime = !showTimeSection && metrics?.TsR === 'aborted' && !!metrics?.dtWall;
 
   const costCode = metrics.$code ? _prettyCostCode(metrics.$code) : null;
+
+  // the provider-reported (billed) cost is the headline when present; the price-table estimate demotes to a footnote
+  const $cHeadline = metrics.$cReported ?? metrics.$c;
+  const $cEstimated = (metrics.$cReported !== undefined && metrics.$c !== undefined) ? metrics.$c : undefined;
+  // cost by class, when cache or tools are in play
+  const showCostByClass = metrics.$cCacheR !== undefined || metrics.$cCacheW !== undefined || metrics.$cTools !== undefined;
 
   return <Box sx={tooltipMetricsGridSx}>
 
@@ -304,12 +330,15 @@ export function prettyMessageMetrics(metrics: DMessageGenerator['metrics'], uiCo
       {', '}<b>{metrics.TOut?.toLocaleString() || ''}</b> out
       {metrics.TOutR !== undefined && <> (<b>{metrics.TOutR?.toLocaleString() || ''}</b> for reasoning)</>}
       {/*{metrics.TOutA !== undefined && <> (<b>{metrics.TOutA?.toLocaleString() || ''}</b> for audio)</>}*/}
+      {!!metrics.nWebSearch && <>{', '}<b>{metrics.nWebSearch.toLocaleString()}</b> {metrics.nWebSearch === 1 ? 'search' : 'searches'}</>}
     </div>}
 
     {/* Timings */}
     {showSpeedSection && <div>Speed:</div>}
     {showSpeedSection && <div>
       {!!metrics.vTOutInner && <>~<b>{(Math.round(metrics.vTOutInner * 10) / 10).toLocaleString() || ''}</b> tok/s</>}
+      {/* non-streaming: TOut / dtAll, mutually exclusive with vTOutInner and the wait */}
+      {vTOutOverall !== undefined && <>~<b>{(Math.round(vTOutOverall * 10) / 10).toLocaleString()}</b> tok/s <span style={{ opacity: 0.5 }}>overall</span></>}
       {showWaitingTime && (<span style={{ opacity: 0.5 }}>
         {metrics.vTOutInner !== undefined && ' · '}
         <span>{prettyDuration(metrics.dtStart!, true)}</span> wait
@@ -317,29 +346,42 @@ export function prettyMessageMetrics(metrics: DMessageGenerator['metrics'], uiCo
     </div>}
 
     {/* Costs */}
-    {metrics?.$c !== undefined && <div>Costs:</div>}
-    {metrics?.$c !== undefined && <div>
-      <b>{formatModelsCost(metrics.$c / 100)}</b>
+    {$cHeadline !== undefined && <div>Costs:</div>}
+    {$cHeadline !== undefined && <div>
+      <b>{formatModelsCost($cHeadline / 100)}</b>
       {metrics.$cdCache !== undefined && <>
         {' '}<small>(
         {metrics.$cdCache > 0
           ? <>cache savings: <b>{formatModelsCost(metrics.$cdCache / 100)}</b></>
-          : <>cache costs: <b>{formatModelsCost(-metrics.$cdCache / 100)}</b></>
+          : <>cache surcharge: <b>{formatModelsCost(-metrics.$cdCache / 100)}</b></>
         })</small>
       </>}
+      {metrics.$xPrice !== undefined && metrics.$xPrice !== 1 && <>{' '}<small>at <b>{metrics.$xPrice}x</b> tier</small></>}
     </div>}
-    {/* Add the 'reported' costs underneath, if defined */}
-    {metrics?.$cReported !== undefined && <div>{metrics?.$c !== undefined ? '' : 'Costs:'}</div>}
-    {metrics?.$cReported !== undefined && <div>
-      <small>reported: <b>{formatModelsCost(metrics.$cReported / 100)}</b></small>
+    {showCostByClass && <div></div>}
+    {showCostByClass && <div>
+      <small>
+        {metrics.$cIn !== undefined && <>in {formatModelsCost(metrics.$cIn / 100)}</>}
+        {metrics.$cCacheR !== undefined && <>{' · '}read {formatModelsCost(metrics.$cCacheR / 100)}</>}
+        {metrics.$cCacheW !== undefined && <>{' · '}wrote {formatModelsCost(metrics.$cCacheW / 100)}</>}
+        {metrics.$cOut !== undefined && <>{' · '}out {formatModelsCost(metrics.$cOut / 100)}</>}
+        {metrics.$cTools !== undefined && <>{' · '}tools {formatModelsCost(metrics.$cTools / 100)}</>}
+      </small>
+    </div>}
+    {/* Add the local price-table estimate underneath, when the headline is the billed cost */}
+    {$cEstimated !== undefined && <div></div>}
+    {$cEstimated !== undefined && <div>
+      <small>estimated: {formatModelsCost($cEstimated / 100)}</small>
     </div>}
     {/* Add the cost 'code' underneath, if any */}
-    {costCode && <div>{(metrics?.$c !== undefined || metrics?.$cReported !== undefined) ? '' : 'Costs:'}</div>}
+    {costCode && <div>{$cHeadline !== undefined ? '' : 'Costs:'}</div>}
     {costCode && <div><em>{costCode}</em></div>}
 
     {/* Time */}
     {showTimeSection && <div>Time:</div>}
+    {showWallTime && <div>Wall time:</div>}
     {showTimeSection && <div><b>{prettyDuration(metrics.dtAll!, true)}</b></div>}
+    {showWallTime && <div><b>{prettyDuration(metrics.dtWall!, true)}</b> <span style={{ opacity: 0.5 }}>until stop</span></div>}
   </Box>;
 }
 
@@ -369,7 +411,7 @@ export function prettyTokenStopReason(reason: DMessageGenerator['tokenStopReason
     case 'issue':
       return complexity === 'extra' ? 'Error' : '';
     case 'out-of-tokens':
-      return 'Out of Tokens';
+      return 'Out of tokens';
     default:
       const _exhaustiveCheck: never = reason;
       return null;
@@ -377,7 +419,7 @@ export function prettyTokenStopReason(reason: DMessageGenerator['tokenStopReason
 }
 
 
-const oaiORegex = /gpt-[345](?:o|\.\d+)?-|o[1345]-|osb-|chatgpt-[45]o?|gpt-5-chat|computer-use-/;
+const oaiORegex = /gpt-[3-6](?:o|\.\d+)?-|o[1345]-|osb-|chatgpt-[45]o?|gpt-5-chat|computer-use-/;
 const geminiRegex = /gemini-|gemma-|learnlm-|deep-research-|antigravity-|nano-banana-/;
 
 
@@ -425,6 +467,7 @@ export function prettyShortChatModelName(model: string | undefined): string {
       .replace('-pro', ' Pro')
       .replace('-preview', ' (preview)')
       // GPT-5.6+ capability tiers
+      .replace('-astra', ' Astra')
       .replace('-sol', ' Sol')
       .replace('-terra', ' Terra')
       .replace('-luna', ' Luna')
@@ -497,7 +540,7 @@ export function prettyShortChatModelName(model: string | undefined): string {
     if (model.includes('grok-beta')) return 'Grok Beta';
     if (model.includes('grok-vision-beta')) return 'Grok Vision Beta';
   }
-  // [OpenAI OSS] gpt-oss family (shared across Cerebras/Groq/etc.) - the OpenAI regex above only matches gpt-[345]
+  // [OpenAI OSS] gpt-oss family (shared across Cerebras/Groq/etc.) - the OpenAI regex above only matches gpt-[3-6]
   if (model.includes('gpt-oss')) {
     return model.slice(model.indexOf('gpt-oss'))
       .replace('gpt-oss', 'GPT OSS')
@@ -539,11 +582,17 @@ export function prettyShortChatModelName(model: string | undefined): string {
       .split('-').map(s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s).join(' ')
       .trim();
   }
-  // [Sakana.ai] fugu, fugu-ultra, fugu-ultra-v1.1 / -20260615 (service prefix already stripped by the auto-label heuristic)
+  // [Sakana.ai] fugu, fugu-ultra, fugu-ultra-v2.0 / -20260615, fugu-max-v1.0 (service prefix already stripped by the auto-label heuristic)
   if (model === 'fugu' || model.startsWith('fugu-')) {
     return model
       .replace(/-20\d{6}$/, '') // strip dated snapshot suffix (e.g. -20260615)
       .split('-').map(s => /^v\d/.test(s) ? s : s.charAt(0).toUpperCase() + s.slice(1)).join(' '); // keep version tokens as-is (v1.1, not V1.1)
+  }
+  // [Meta AI] muse-spark-1.3, muse-spark-1.3-contributor, muse-image-1.0 (service prefix already stripped by the auto-label heuristic)
+  if (model.startsWith('muse-')) {
+    return model
+      .replace(/-contributor$/, ' (Contributor)')
+      .split('-').map(s => /^\d/.test(s) ? s : s.charAt(0).toUpperCase() + s.slice(1)).join(' '); // keep version tokens as-is (1.3)
   }
   // [FireworksAI]
   if (model.includes('accounts/')) {
@@ -609,8 +658,8 @@ function _prettyGeminiModelName(cutModel: string): string {
 function _prettyAnthropicModelName(modelId: string): string | null {
   if (!modelId.includes('claude-')) return null;
 
-  // extract version as N.M (e.g. `-4-7` -> 4.7, `-4-` -> 4); (?!\d) guards against date digits
-  const m = modelId.match(/-(\d)(?:-(\d)(?!\d))?/);
+  // extract version as N.M (e.g. `-4-7` -> 4.7, `-4-` -> 4); `[-.]` also reads OpenRouter's dotted ids (`-5.1`); (?!\d) guards against date digits
+  const m = modelId.match(/-(\d)(?:[-.](\d)(?!\d))?/);
   const version = m ? (m[2] ? `${m[1]}.${m[2]}` : m[1]) : '?';
 
   if (modelId.includes('-fable')) return `Claude Fable ${version}`;

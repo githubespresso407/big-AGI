@@ -4,6 +4,8 @@
 
 import type { ModelVendorId } from '~/modules/llms/vendors/vendors.registry';
 
+import { toLocalDateYYYYMMDD } from '~/common/util/timeUtils';
+
 import type { DModelParameterSpecAny, DModelParameterValues } from './llms.parameters';
 import type { DModelPricing } from './llms.pricing';
 import type { DModelsServiceId } from './llms.service.types';
@@ -19,7 +21,7 @@ export type DLLMId = string;
  * Large Language Model - description and configuration (data object, stored)
  */
 export interface DLLM {
-  id: DLLMId;
+  readonly id: DLLMId;
 
   // factory properties (overwritten on update)
   label: string;
@@ -41,8 +43,10 @@ export interface DLLM {
   initialParameters: DModelParameterValues;
 
   // references (const, never change)
-  sId: DModelsServiceId; // could be weak, but they're removed at the same time
-  vId: ModelVendorId; // known hardcoded value
+  readonly sId: DModelsServiceId; // could be weak, but they're removed at the same time
+  readonly vId: ModelVendorId; // known hardcoded value
+
+  readonly firstSeen?: string; // when model first appeared in listing, in 'YYYYMMDD' (absent: present before we began tracking)
 
   // user edited properties - if not undefined/missing, they override the others
   userLabel?: string;
@@ -171,13 +175,6 @@ function _llmPubKey(llm: DLLM | null | undefined): string {
   return p && /^\d{8}$/.test(p) ? p : '';
 }
 
-/** Format an epoch-ms instant as a local-time 'YYYYMMDD' string (same local-midnight basis as getLLMPubDate). */
-function _toPubDateStr(ms: number): string {
-  const d = new Date(ms);
-  const mm = d.getMonth() + 1, dd = d.getDate();
-  return `${d.getFullYear()}${mm < 10 ? '0' : ''}${mm}${dd < 10 ? '0' : ''}${dd}`;
-}
-
 /**
  * Newest accessible models grouped by vendor, ordered most-recent-first: the vendor whose freshest
  * surfaced model has the latest `pubDate` leads - fitting for a "what's new" surface.
@@ -198,7 +195,7 @@ export function getNewestModelsByVendor(llms: ReadonlyArray<DLLM>, options?: {
   onlyVisible?: boolean, // accessible (non-hidden) models only (default true)
 }) {
   const { maxNew = 5, maxFallback = 2, onlyVisible = true } = options ?? {};
-  const cutoff = _toPubDateStr(Date.now() - LLM_RECENTLY_PUBLISHED_DAYS * 24 * 60 * 60 * 1000); // 'YYYYMMDD' recency threshold, computed once
+  const cutoff = toLocalDateYYYYMMDD(Date.now() - LLM_RECENTLY_PUBLISHED_DAYS * 24 * 60 * 60 * 1000); // 'YYYYMMDD' recency threshold, computed once (same local-midnight basis as getLLMPubDate)
 
   // group accessible models by vendor (no clones, no symlink aliases), preserving the store's display order
   const byVendor = new Map<ModelVendorId, DLLM[]>();
@@ -250,6 +247,7 @@ export type DModelInterfaceV1 =
   | 'oai-prompt-caching'
   | 'oai-realtime'
   | 'oai-responses'
+  | 'inputs-video'             // TEMP: ui flag - supports video inputs (URL-referenced or inline), e.g. Gemini video understanding
   | 'outputs-audio'            // TEMP: ui flag - supports audio output (e.g., text-to-speech)
   | 'outputs-image'            // TEMP: ui flag - supports image output (image generation)
   | 'outputs-no-text'          // disable text outputs (used in conjunction with alt-outputs) - assumed off
@@ -272,6 +270,7 @@ export const LLM_IF_ANT_ToolsSearch: DModelInterfaceV1 = 'ant-tools-search';
 // export const LLM_IF_OAI_JsonSchema: ... future?
 export const LLM_IF_OAI_Vision: DModelInterfaceV1 = 'oai-chat-vision';
 export const LLM_IF_OAI_Reasoning: DModelInterfaceV1 = 'oai-chat-reasoning';
+export const LLM_IF_Inputs_Video: DModelInterfaceV1 = 'inputs-video';
 export const LLM_IF_Outputs_Audio: DModelInterfaceV1 = 'outputs-audio';
 export const LLM_IF_Outputs_Image: DModelInterfaceV1 = 'outputs-image';
 export const LLM_IF_Outputs_NoText: DModelInterfaceV1 = 'outputs-no-text';
@@ -299,6 +298,7 @@ export const LLMS_ALL_INTERFACES = [
   LLM_IF_ANT_ToolsSearch,     // Anthropic tool: Tools Search
   // Generalized capabilities
   LLM_IF_OAI_Reasoning,       // COSMETIC ONLY - may show a 'brain' icon in supported screens
+  LLM_IF_Inputs_Video,        // Models that accept video inputs (URL-referenced fileData or inline) - e.g. Gemini 2.5+/3.x
   LLM_IF_Outputs_Audio,       // COSMETIC ONLY FOR NOW - Models that generate audio output (TTS models)
   LLM_IF_Outputs_Image,       // COSMETIC ONLY FOR NOW - Models that can generate images (Gemini, DALL-E, etc.)
   LLM_IF_Outputs_NoText,      // Disable Text Outputs - e.g. Gemini pure TTS

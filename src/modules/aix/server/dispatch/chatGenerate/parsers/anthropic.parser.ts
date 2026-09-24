@@ -1,7 +1,7 @@
 import { safeErrorString } from '~/server/wire';
 
 import type { AixWire_Particles } from '../../../api/aix.wiretypes';
-import type { ChatGenerateParseFunction } from '../chatGenerate.dispatch';
+import type { ChatGenerateParseContext, ChatGenerateParseFunction } from '../chatGenerate.dispatch';
 import type { IParticleTransmitter } from './IParticleTransmitter';
 import { IssueSymbols } from '../ChatGenerateTransmitter';
 import { aixResilientUnknownValue } from '../../../api/aix.resilience';
@@ -101,7 +101,7 @@ export function createAnthropicMessageParser(): ChatGenerateParseFunction {
     return true;
   };
 
-  return function(pt: IParticleTransmitter, eventData: string, eventName?: string, context?: { retriesAvailable: boolean }): void {
+  return function(pt: IParticleTransmitter, eventData: string, eventName?: string, context?: ChatGenerateParseContext): void {
 
     // Time to first event
     if (timeToFirstEvent === undefined)
@@ -145,20 +145,13 @@ export function createAnthropicMessageParser(): ChatGenerateParseFunction {
           if (ANTHROPIC_DEBUG_EVENT_SEQUENCE) console.log(`ant message_start: container=${responseMessage.container.id}`);
         }
 
+        // -> [2026-09-01] Preserved thinking: replayed thinking blocks the API dropped (edited history, or a model switch)
+        if (responseMessage.input_transformations?.length)
+          _sendInputTransforms(pt, responseMessage.input_transformations);
+
         if (responseMessage.usage) {
           chatInTokens = responseMessage.usage.input_tokens;
-          const metricsUpdate: AixWire_Particles.CGSelectMetrics = {
-            TIn: chatInTokens,
-            TOut: responseMessage.usage.output_tokens,
-            dtStart: timeToFirstEvent,
-          };
-          if (responseMessage.usage.cache_read_input_tokens || responseMessage.usage.cache_creation_input_tokens) {
-            if (typeof responseMessage.usage.cache_read_input_tokens === 'number')
-              metricsUpdate.TCacheRead = responseMessage.usage.cache_read_input_tokens;
-            if (typeof responseMessage.usage.cache_creation_input_tokens === 'number')
-              metricsUpdate.TCacheWrite = responseMessage.usage.cache_creation_input_tokens;
-          }
-          pt.updateMetrics(metricsUpdate);
+          pt.updateMetrics({ ..._fromAnthropicUsage(responseMessage.usage), dtStart: timeToFirstEvent });
         }
 
         if (ANTHROPIC_DEBUG_EVENT_SEQUENCE) console.log(`ant message_start: model=${responseMessage.model}, TIn=${chatInTokens || 0}, container=${responseMessage.container?.id || 'none'}`);
@@ -454,11 +447,10 @@ export function createAnthropicMessageParser(): ChatGenerateParseFunction {
           if (usage?.output_tokens) {
             const elapsedTimeSeconds = elapsedTimeMilliseconds / 1000;
             const chatOutRate = elapsedTimeSeconds > 0 ? usage.output_tokens / elapsedTimeSeconds : 0;
-            metricsUpdate.TIn = chatInTokens !== undefined ? chatInTokens : -1;
-            metricsUpdate.TOut = usage.output_tokens;
-            // reasoning tokens are a subset of output_tokens (already in TOut) - surfaced as a breakdown, like OpenAI/Gemini
-            if (typeof usage.output_tokens_details?.thinking_tokens === 'number')
-              metricsUpdate.TOutR = usage.output_tokens_details.thinking_tokens;
+            // the delta carries the final input side (server tool results land here, not in message_start)
+            Object.assign(metricsUpdate, _fromAnthropicUsage(usage));
+            if (metricsUpdate.TIn === undefined)
+              metricsUpdate.TIn = chatInTokens ?? -1;
             metricsUpdate.vTOutInner = Math.round(chatOutRate * 100) / 100; // Round to 2 decimal places
           }
           pt.updateMetrics(metricsUpdate);
@@ -500,18 +492,18 @@ export function createAnthropicMessageParser(): ChatGenerateParseFunction {
         // 500* - api_error (anthropic systems internal unexpected error)
         // 529* - overloaded_error: The API is temporarily overloaded.
         // *: retryable errors
-        const isRetryableError = ['overloaded_error', 'rate_limit_error', 'api_error'].includes(error.type);
+        // map error types to HTTP status codes: selects the retry class (429/529 capacity, 500 transient) and shows in diagnostics
+        const errorTypeToHttpStatus: Record<string, number> = {
+          'rate_limit_error': 429,
+          'api_error': 500,
+          'overloaded_error': 529,
+        };
+        const isRetryableError = error.type in errorTypeToHttpStatus;
 
-        // Throw retryable error to instruct the correct ancestor to restart (only if retries available
+        // Throw retryable error to instruct the correct ancestor to restart (only if retries available for this class)
         if (isRetryableError) {
-          if (context?.retriesAvailable) {
+          if (context?.hasRetriesForHttpStatus(errorTypeToHttpStatus[error.type])) {
             console.log(`[Aix.Anthropic] Can retry error '${errorText}'`);
-            // map error types to HTTP status codes for diagnostics
-            const errorTypeToHttpStatus: Record<string, number> = {
-              'rate_limit_error': 429,
-              'api_error': 500,
-              'overloaded_error': 529,
-            };
             // request a retry by unwinding to the retrier
             throw new OperationRetrySignal(`Anthropic: ${errorText}`, {
               causeHttp: errorTypeToHttpStatus[error.type],
@@ -546,7 +538,7 @@ export function createAnthropicMessageParserNS(): ChatGenerateParseFunction {
     return true;
   };
 
-  return function(pt: IParticleTransmitter, fullData: string /*, eventName?: string, context?: { retriesAvailable: boolean } */): void {
+  return function(pt: IParticleTransmitter, fullData: string /*, eventName?: string, context?: ChatGenerateParseContext */): void {
 
     // parse with validation (e.g. type: 'message' && role: 'assistant')
     const {
@@ -556,6 +548,7 @@ export function createAnthropicMessageParserNS(): ChatGenerateParseFunction {
       stop_reason,
       stop_details,
       usage,
+      input_transformations,
     } = AnthropicWire_API_Message_Create.Response_schema.parse(JSON.parse(fullData));
 
     // -> Model
@@ -565,6 +558,10 @@ export function createAnthropicMessageParserNS(): ChatGenerateParseFunction {
     // -> Container metadata (for Skills) - propagate to client via svs for cross-turn reuse
     if (container)
       _emitContainerState(pt, container);
+
+    // -> [2026-09-01] Preserved thinking: dropped replayed thinking blocks
+    if (input_transformations?.length)
+      _sendInputTransforms(pt, input_transformations);
 
     // -> Content Blocks - Non-Streaming
     for (let i = 0; i < content.length; i++) {
@@ -674,25 +671,12 @@ export function createAnthropicMessageParserNS(): ChatGenerateParseFunction {
     }
 
     // -> Stats: timing always (measured locally); token/cache fields only when the usage block is present (#1149)
-    const metricsUpdate: AixWire_Particles.CGSelectMetrics = {
+    pt.updateMetrics({
+      ...(usage ? _fromAnthropicUsage(usage) : {}),
       // vTOutInner: // we don't know the server-side rate
       // dtStart / dtInner: // we don't know
       dtAll: Date.now() - parserCreationTimestamp,
-    };
-    if (usage) {
-      metricsUpdate.TIn = usage.input_tokens;
-      metricsUpdate.TOut = usage.output_tokens;
-      if (usage.cache_read_input_tokens || usage.cache_creation_input_tokens) {
-        if (typeof usage.cache_read_input_tokens === 'number')
-          metricsUpdate.TCacheRead = usage.cache_read_input_tokens;
-        if (typeof usage.cache_creation_input_tokens === 'number')
-          metricsUpdate.TCacheWrite = usage.cache_creation_input_tokens;
-      }
-      // reasoning tokens are a subset of output_tokens (already in TOut) - surfaced as a breakdown, like OpenAI/Gemini
-      if (typeof usage.output_tokens_details?.thinking_tokens === 'number')
-        metricsUpdate.TOutR = usage.output_tokens_details.thinking_tokens;
-    }
-    pt.updateMetrics(metricsUpdate);
+    });
 
     // Continuation: when pause_turn, throw to trigger re-dispatch with accumulated content
     if (stop_reason === 'pause_turn')
@@ -739,6 +723,37 @@ function _emitContainerState(pt: IParticleTransmitter, container: { id: string; 
     vendor: 'anthropic',
     state: { container: { id: container.id, expiresAt: container.expires_at } },
   });
+}
+
+/** [2026-09-01] Preserved thinking: relay the replayed thinking blocks the API dropped, as one void notice per vendor reason (normalized to an AIX cause). */
+function _sendInputTransforms(pt: IParticleTransmitter, transforms: NonNullable<AnthropicWire_API_Message_Create.Response['input_transformations']>): void {
+  const pathsByReason = new Map<string, string[]>();
+  for (const { type, path, reason } of transforms) {
+    if (type !== 'thinking_dropped') {
+      aixResilientUnknownValue('Anthropic', 'inputTransformationType', type);
+      continue;
+    }
+    pathsByReason.set(reason, [...(pathsByReason.get(reason) ?? []), path]);
+  }
+  for (const [reason, paths] of pathsByReason) {
+    // NOTE: Anthropic's 'prefix_binding_mismatch' fires identically for an edited/deleted message, a changed
+    // tool selection, or a changed system prompt (e.g. our own {{LocaleNow}} ticking to a new hour) - it does
+    // NOT tell us which. Empirically verified live (2026-09-21): a pure tool toggle and a pure system-prompt
+    // change both return this exact reason with zero message edits. Don't claim "History edited" here, it's
+    // provably wrong in those cases - stay cause-neutral instead.
+    const cause = reason === 'prefix_binding_mismatch' ? 'prefix-changed' : reason === 'model_binding_mismatch' ? 'model-switch' : reason;
+    const why = cause === 'prefix-changed' ? 'Reasoning reset' : cause === 'model-switch' ? 'Model changed' : cause;
+    const what = paths.length > 1 ? `ignored ${paths.length} reasoning blocks` : 'ignored 1 reasoning block';
+    const where = paths.map(p => p.replace(/^messages\.(\d+)\.content\.(\d+).*$/, '$1.$2')).join(', '); // wire positions: message.block
+    const detail = cause === 'prefix-changed'
+      ? `Harmless: the model reasoned again instead of reusing earlier reasoning. This happens when a message, the tool selection, or the instructions changed since that reasoning was generated.\nIgnored indices: ${where} (zero-based)`
+      : `Harmless: the model rethinks from the messages as they are now.\nIgnored indices: ${where} (zero-based)`;
+    pt.appendVoidNotice({
+      p: 'vnt', nt: 'input-transform', itt: 'thinking-dropped', cause, reason, paths,
+      text: `${why}: ${what}`,
+      detail,
+    });
+  }
 }
 
 /** Compose a human-readable error string from Anthropic's stop_details. Returns undefined when nothing useful to surface. */
@@ -1132,6 +1147,46 @@ function _createAnthropicPauseTurnContinuation(
   };
 }
 
+
+/** Usage -> counts, tool calls, served tier. One mapper for message_start, message_delta (final) and the non-streaming response. input_tokens excludes the cache classes. */
+function _fromAnthropicUsage(usage: {
+  input_tokens?: number | null,
+  output_tokens: number,
+  output_tokens_details?: { thinking_tokens: number } | null,
+  cache_read_input_tokens?: number | null,
+  cache_creation_input_tokens?: number | null,
+  server_tool_use?: { web_search_requests?: number } | null,
+  service_tier?: string | null,
+  inference_geo?: string | null,
+  speed?: string | null,
+}): AixWire_Particles.CGSelectMetrics {
+  const metrics: AixWire_Particles.CGSelectMetrics = { TOut: usage.output_tokens };
+  if (typeof usage.input_tokens === 'number')
+    metrics.TIn = usage.input_tokens;
+  if (usage.cache_read_input_tokens)
+    metrics.TCacheRead = usage.cache_read_input_tokens;
+  if (usage.cache_creation_input_tokens)
+    metrics.TCacheWrite = usage.cache_creation_input_tokens;
+  // reasoning tokens are a subset of output_tokens (already in TOut) - surfaced as a breakdown, like OpenAI/Gemini
+  if (typeof usage.output_tokens_details?.thinking_tokens === 'number')
+    metrics.TOutR = usage.output_tokens_details.thinking_tokens;
+  // per-call billed server tools
+  if (usage.server_tool_use?.web_search_requests)
+    metrics.nWebSearch = usage.server_tool_use.web_search_requests;
+  // served tier/geo (not on the delta)
+  const $xPrice = _antPriceMultiplier(usage);
+  if ($xPrice !== undefined)
+    metrics.$xPrice = $xPrice;
+  return metrics;
+}
+
+/** Served tags -> confirmed multiplier: batch 0.5x, US residency 1.1x. A served 'fast' is per-model priced and stays on the parameter side; 'standard' confirms plain rates. */
+function _antPriceMultiplier(usage: { service_tier?: string | null, inference_geo?: string | null, speed?: string | null }): number | undefined {
+  if (usage.speed === 'fast') return undefined;
+  const multiplier = (usage.service_tier === 'batch' ? 0.5 : 1) * (usage.inference_geo === 'us' ? 1.1 : 1);
+  if (multiplier === 1 && usage.speed !== 'standard') return undefined; // nothing confirmed
+  return Math.round(multiplier * 1000) / 1000;
+}
 
 function _fromAnthropicStopReason(stopReason: AnthropicWire_API_Message_Create.Response['stop_reason'], debugCaller: string) {
   switch (stopReason) {

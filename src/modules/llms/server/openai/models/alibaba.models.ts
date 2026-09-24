@@ -7,11 +7,38 @@ import { fromManualMapping, llmsDefineManualMappings, llmsLabelUncurated } from 
 // --- Alibaba Model ID inference (auto-derived from _knownAlibabaChatModels) ---
 export type LlmsAlibabaModelId = typeof _knownAlibabaChatModels[number]['idPrefix'];
 
-// Sources (verified 2026-08-14 against the live /v1/models list + docs):
+// Sources (verified 2026-09-02 against the live /v1/models list + docs):
 // - Models:  https://www.alibabacloud.com/help/en/model-studio/models
 // - Pricing: https://www.alibabacloud.com/help/en/model-studio/model-pricing (International/Singapore, USD per 1M tokens)
 // - Per-model pages carry the authoritative caps + cache-hit price, e.g. https://www.alibabacloud.com/help/en/model-studio/qwen3-8-max
-// - Cache:   https://www.alibabacloud.com/help/en/model-studio/context-cache (implicit hit = 20% of input; explicit create 125% / hit 10%; deepseek-v4-pro excepted)
+// - Cache:   https://www.alibabacloud.com/help/en/model-studio/context-cache (implicit hit = 20% of input; explicit create 125% / hit 10%; deepseek-v4-pro and
+//            the qwen3.8 line excepted - their rates come off the model pages)
+// 2026-09-14 pass (DeepSeek only): deepseek-v4.1-flash curated visible - DashScope's only route to V4.1 (it lists no undated
+//   'deepseek-flash'), peak card 0.3/1.2 with Alibaba's own 0.03 implicit cache-hit (Intl price table + model page).
+// 2026-09-02 pass: qwen3.8-max-0902 curated visible (upgraded snapshot listed today; the base id still serves the 08-03 checkpoint per
+//   Alibaba's OpenRouter endpoint name, and the price table prints no 'Currently equivalent to' on qwen3.8-max). DeepSeek GA snapshots
+//   repriced: deepseek-v4-pro-0813 and -flash-0731 moved to peak/off-peak billing on 2026-08-17 (Intl table + model pages), we carry
+//   the peak card like deepseek.models.ts. GLM-5.2 / -fast implicit cache-hit 25% -> 20% on the Singapore model pages. The Intl table
+//   finally lists the whole qwen3.8 line + qwen3.7-flash (no drift vs what we had). 'ZHIPU/GLM-5.3' and 'kimi/kimi-k3' still 403
+//   'product not activated' (the recommended list now names GLM-5.3; the table gained a Zhipu-hosted 'ZHIPU/GLM-5.2' row, not on our
+//   list). MiniMax-M2.5 is recommended + has a model page (Beijing-only, $0.304/$1.213, 200K ctx, text-only, thinking-only) but is
+//   absent from the Intl list and 404s live - nothing to curate. lmarena unreachable (301), ELOs left as-is.
+// 2026-08-31 pass: qwen3.8-flash curated (new Flash tier, listed 2026-08-26 - model page + OR's Alibaba endpoint + live
+//   probes all agree; flat pricing, no tiers). No retirements, no price drift on the curated rows. 'ZHIPU/GLM-5.3' still
+//   403s 'product not activated' (re-probed), and a namespaced 'kimi/kimi-k3' appeared with the same gate - both left
+//   uncurated (hidden) pending activation.
+// 2026-08-24 pass: two ids DashScope started serving after the 08-17 pass are curated - qwen3.8-27b (open weights Apache-2.0
+//   2026-08-14, model page 08-19 + live probes) and kimi-k3 (Moonshot flagship, model page 08-24; effort ladder live-ablated
+//   -> _PS_KimiEffort). No retirements and zero price drift on the Intl tables (which still predate the whole qwen3.8 line).
+//   'ZHIPU/GLM-5.3' now appears on the list but 403s with 'The product is not activated', has no model page (404) and no price
+//   row - left uncurated (hidden) pending activation.
+// 2026-08-17 pass (Qwen): live list identical to the 08-14 triage (no new ids, no retirements, zero uncurated) and no price drift
+//   on the Intl table; qwen3.8-* gain the real reasoning_effort ladder (_PS_Qwen38Effort, ablated) and qwen3.8-2.4t-a95b is
+//   thinking-compulsory, so it drops the Off value; that model page is now published and confirms the caps/price we had taken
+//   from OpenRouter. Qwen3.8-27B (open weights, Apache-2.0, 2026-08-14) is not served by DashScope - hosts only. ELOs refreshed.
+// 2026-08-16 pass (GLM only): glm-5.3 (Z.ai release 2026-08-14) NOT on the intl list yet - re-probe before adding; the three GLM
+//   ids re-verified live (no retirements, no price drift); glm-5.1 context 204800 -> 202745 (model page + probe); glm-5.2 gains
+//   the reasoning_effort ladder (_PS_GlmEffort, ablated).
 // 2026-08-14 triage: deny list added (retired 2025-era lines dropped from the list entirely) + short-form curation for every
 //   other live chat id: qwen3.8-2.4t-a95b (open-weights flagship) and qwen3-coder-next visible; the qwen3.5/3.6 generations,
 //   qwen3-max/-vl-flash/-coder-flash, and glm-5.1 hidden. Zero uncurated ('[?]') ids remain against the live list.
@@ -43,6 +70,38 @@ const _PS_DeepSeekEffort: ModelDescriptionSchema['parameterSpecs'] = [
   { paramId: 'llmVndMiscEffort', enumValues: ['none', 'low', 'high', 'max'] },
 ] as const;
 
+// [GLM, 2026-08-16] DashScope-hosted GLM-5.2 also honors 'reasoning_effort' (live-ablated, n=15/arm, no prompt-token fingerprint
+// here - tiers from reasoning_tokens): none/minimal = off | low = medium = high (~550-660 tokens, the reduced tier) | xhigh = max
+// = default (~1.0-1.1K, ~1.85x) - Z.ai's documented native mapping. Through the 'alibaba' dialect (reasoning_effort sent only for
+// low/max) this yields exactly one value per behavior: Off / Low (reduced) / Max (= Default). 'high' would emit only
+// enable_thinking:true, i.e. a duplicate of Default, so it is left out.
+const _PS_GlmEffort: ModelDescriptionSchema['parameterSpecs'] = [
+  { paramId: 'llmVndMiscEffort', enumValues: ['none', 'low', 'max'] },
+] as const;
+
+// [Qwen, 2026-08-17] Qwen3.8 is the first Qwen generation with a real reasoning_effort ladder (model card: xhigh default /
+// medium / low). DashScope validates it per model: qwen3.8-* accept none|minimal|low|medium|high|xhigh|max, qwen3.7-* the same
+// minus 'max' but ignore it (live-ablated: no per-tier fingerprint on 3.7, only none/minimal turn thinking off - keep _PS_Thinking
+// there). On qwen3.8 the hidden-preamble prompt-token fingerprint groups the values as: off {none} | {medium} | reduced
+// {low, minimal} | top {high, xhigh, max, unset}. Through the 'alibaba' dialect (reasoning_effort sent only for low/max) that is
+// Off / Low / Max (= Default); 'medium' is not expressible by llmVndMiscEffort and 'high' would duplicate Default.
+const _PS_Qwen38Effort: ModelDescriptionSchema['parameterSpecs'] = [
+  { paramId: 'llmVndMiscEffort', enumValues: ['none', 'low', 'max'] },
+] as const;
+
+// Same ladder minus Off: the open-weights id rejects enable_thinking:false ('the value of the enable_thinking parameter is
+// restricted to True', live 2026-08-17), so offering it would 400.
+const _PS_Qwen38EffortAlwaysOn: ModelDescriptionSchema['parameterSpecs'] = [
+  { paramId: 'llmVndMiscEffort', enumValues: ['low', 'max'] },
+] as const;
+
+// [Kimi, 2026-08-24] DashScope-hosted Kimi K3 honors 'reasoning_effort' as well (live-ablated, n=2/arm; the hidden-preamble
+// prompt-token fingerprint groups the values as: off {none, minimal} | reduced {low, medium, high} | top {xhigh, max, unset}).
+// Through the 'alibaba' dialect (reasoning_effort sent only for low/max) that is Off / Low / Max (= Default).
+const _PS_KimiEffort: ModelDescriptionSchema['parameterSpecs'] = [
+  { paramId: 'llmVndMiscEffort', enumValues: ['none', 'low', 'max'] },
+] as const;
+
 const _knownAlibabaChatModels = llmsDefineManualMappings([
 
   // --- Qwen flagship / current generation ---
@@ -51,27 +110,71 @@ const _knownAlibabaChatModels = llmsDefineManualMappings([
     // Caps live-probed 2026-08-04: input cap 991,808, vision/fn/thinking all OK, thinking on by default.
     idPrefix: 'qwen3.8-max',
     label: 'Qwen3.8 Max',
-    parameterSpecs: _PS_Thinking,
+    parameterSpecs: _PS_Qwen38Effort,
     pubDate: '20260719',
     description: 'Flagship 2.4T-parameter sparse MoE multimodal model with 1M context, thinking, and vision/video understanding.',
     contextWindow: 1000000, // 1M (live-probed input cap: 991,808)
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Vision, LLM_IF_OAI_Reasoning],
     maxCompletionTokens: 131072, // 128K (live-probed with thinking on; 64K with thinking off)
-    chatPrice: { input: 2.00, output: 6.00, cache: { cType: 'oai-ac', read: 0.25 } }, // cache-hit input per the model page (not the 20% rule)
-    benchmark: { cbaElo: 1497 }, // lmarena: qwen3.8-max
+    chatPrice: { input: 2.00, output: 6.00, cache: { read: 0.25 } }, // cache-hit input per the model page (not the 20% rule)
+    benchmark: { cbaElo: 1491 }, // lmarena: qwen3.8-max
   },
   {
-    // Open-weights release of the Qwen3.8 flagship (live 2026-08-13). Not on the Intl price page yet:
-    // price/caps from Alibaba's own OpenRouter endpoint ($2/$6, cache-hit 0.25, 1M in / 128K out, text-only).
+    // Upgraded snapshot (alias qwen3.8-max-2026-09-02), listed 2026-09-02: engineering-scale coding, multi-tool orchestration and vision
+    // refined; same 1M window, thinking and tool surface. Curated verbatim and visible because the base id has not moved onto it.
+    // Live-probed 2026-09-02: input cap 991,808, 128K out in both modes, vision + tools OK, thinking on by default, enable_thinking:false
+    // accepted, reasoning_effort validated with the full 7-value enum. Same $2/$6 + 0.25 cache-hit row on the Intl table and model page.
+    idPrefix: 'qwen3.8-max-0902',
+    label: 'Qwen3.8 Max 0902',
+    parameterSpecs: _PS_Qwen38Effort,
+    pubDate: '20260902',
+    description: 'Upgraded 0902 snapshot of Qwen3.8 Max: stronger engineering-scale coding, agent tool orchestration, and visual understanding. 1M context, thinking, vision/video.',
+    contextWindow: 1000000, // 1M (live-probed input cap: 991,808)
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Vision, LLM_IF_OAI_Reasoning],
+    maxCompletionTokens: 131072, // 128K (live-probed max_tokens range, thinking on and off)
+    chatPrice: { input: 2.00, output: 6.00, cache: { read: 0.25 } },
+  },
+  {
+    // Open-weights release of the Qwen3.8 flagship (live 2026-08-13). Its model page (published 2026-08-13), the Intl price
+    // table (row added by 2026-09-02) and Alibaba's OpenRouter endpoint agree: $2/$6, implicit cache-hit 0.25,
+    // 991,808 max input / 1M context / 128K out, text-only. Thinking cannot be turned off (see _PS_Qwen38EffortAlwaysOn).
     idPrefix: 'qwen3.8-2.4t-a95b',
     label: 'Qwen3.8 2.4T-A95B',
-    parameterSpecs: _PS_Thinking,
+    parameterSpecs: _PS_Qwen38EffortAlwaysOn,
     pubDate: '20260812',
-    description: 'Open-weights release of the Qwen3.8 flagship: 2.4T sparse MoE, ~95B active. Text-only serving with 1M context and thinking.',
+    description: 'Open-weights release of the Qwen3.8 flagship: 2.4T sparse MoE, ~95B active. Text-only serving with 1M context and always-on thinking.',
     contextWindow: 1000000, // 1M
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning],
     maxCompletionTokens: 131072, // 128K
-    chatPrice: { input: 2.00, output: 6.00, cache: { cType: 'oai-ac', read: 0.25 } },
+    chatPrice: { input: 2.00, output: 6.00, cache: { read: 0.25 } },
+  },
+  {
+    // Open-weights dense VL model of the Qwen3.8 line (Apache-2.0, 2026-08-14); DashScope only started serving it after the
+    // 08-17 pass. Model page (published 2026-08-19) + live probes agree: 991,808 max input (983,616 thinking) / 1M context /
+    // 128K out / 256K max CoT, $0.5/$3 Singapore with the 20% implicit-cache rule. Intl price table row added by 2026-09-02.
+    idPrefix: 'qwen3.8-27b',
+    label: 'Qwen3.8 27B',
+    parameterSpecs: _PS_Qwen38Effort, // full ladder + enable_thinking:false all accepted (live-ablated 2026-08-24, same buckets as qwen3.8-max)
+    pubDate: '20260814',
+    description: 'Open-weights 27B dense vision-language model of the Qwen3.8 line. 1M context, thinking, image/video input.',
+    contextWindow: 1000000, // 1M
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Vision, LLM_IF_OAI_Reasoning],
+    maxCompletionTokens: 131072, // 128K (max_tokens range live-probed)
+    chatPrice: { input: 0.50, output: 3.00, cache: { read: 0.10 } },
+  },
+  {
+    // Latest Flash tier (listed 2026-08-26). Flat pricing - no input-length tiers, unlike qwen3.7-flash. Caps from the
+    // model page + live probes 2026-08-31: input cap 991,808 (983,616 thinking), 128K out, 256K max CoT; vision path
+    // enabled; enable_thinking:false works; reasoning_effort validated per-model (bogus values 400 with the full enum).
+    idPrefix: 'qwen3.8-flash',
+    label: 'Qwen3.8 Flash',
+    parameterSpecs: _PS_Qwen38Effort,
+    pubDate: '20260826',
+    description: 'Latest fast multimodal model of the Qwen3.8 line: 1M context, thinking (on by default), vision/video, 128K output.',
+    contextWindow: 1000000, // 1M (model page; live input cap 991,808)
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Vision, LLM_IF_OAI_Reasoning],
+    maxCompletionTokens: 131072, // 128K (model page + max_tokens range probe)
+    chatPrice: { input: 0.15, output: 0.47, cache: { read: 0.016 } }, // Singapore model-page rates (flat); OR's Alibaba endpoint agrees
   },
   {
     idPrefix: 'qwen3.7-max',
@@ -82,8 +185,8 @@ const _knownAlibabaChatModels = llmsDefineManualMappings([
     contextWindow: 1000000, // 1M
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning], // text-only (no vision)
     maxCompletionTokens: 131072, // 128K (live-probed; docs still say 64K)
-    chatPrice: { input: 2.50, output: 7.50, cache: { cType: 'oai-ac', read: 0.50 } }, // implicit cache hit 0.50 (explicit hit 0.25)
-    benchmark: { cbaElo: 1475 }, // lmarena: qwen3.7-max-preview (same model, pre-GA id)
+    chatPrice: { input: 2.50, output: 7.50, cache: { read: 0.50 } }, // implicit cache hit 0.50 (explicit hit 0.25)
+    benchmark: { cbaElo: 1474 }, // lmarena: qwen3.7-max-preview (same model, pre-GA id)
   },
   {
     idPrefix: 'qwen3.7-plus',
@@ -112,7 +215,7 @@ const _knownAlibabaChatModels = llmsDefineManualMappings([
     chatPrice: {
       input: [{ upTo: 32000, price: 0.03 }, { upTo: 256000, price: 0.10 }, { upTo: null, price: 0.20 }],
       output: [{ upTo: 32000, price: 0.13 }, { upTo: 256000, price: 0.40 }, { upTo: null, price: 0.80 }],
-    }, // not on the Intl pricing page; tiers from the model page + Alibaba's own OpenRouter endpoint. implicit cache: 0.006 / 0.02 / 0.04
+    }, // Intl price table (row added by 2026-09-02), model page and Alibaba's own OpenRouter endpoint agree. implicit cache: 0.006 / 0.02 / 0.04
   },
   {
     // kept visible alongside qwen3.7-flash: still on Alibaba's recommended list 2026-08-06
@@ -218,7 +321,7 @@ const _knownAlibabaChatModels = llmsDefineManualMappings([
     parameterSpecs: _PS_Thinking,
     contextWindow: 1000000, maxCompletionTokens: 65536,
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Vision, LLM_IF_OAI_Reasoning],
-    chatPrice: { input: 0.10, output: 0.40, cache: { cType: 'oai-ac', read: 0.02 } }, // 20% implicit-hit rule
+    chatPrice: { input: 0.10, output: 0.40, cache: { read: 0.02 } }, // 20% implicit-hit rule
   },
   {
     idPrefix: 'qwen3.5-397b-a17b', label: 'Qwen3.5 397B-A17B', pubDate: '20260216', hidden: true,
@@ -332,19 +435,40 @@ const _knownAlibabaChatModels = llmsDefineManualMappings([
   // api.deepseek.com, which only exposes undated ids and swaps checkpoints in place behind them. Alibaba does not print the
   // "Currently equivalent to <snapshot>" note it uses for Qwen on the DeepSeek rows, so which checkpoint the undated ids
   // serve is undocumented - hence the 0813 snapshot is curated visible, as the only pinnable GA route here.
-  // Prices: no snapshot rows exist on the price table; snapshots bill at their mainline Singapore rate.
+  // Prices: the GA snapshots (-0813, -0731) moved to peak/off-peak billing on 2026-08-17 (Intl table + model pages; the windows are
+  // in a Chinese-only notice, aliyun.com/notice/118555) at exactly DeepSeek-direct's card, off-peak = half. chatPrice carries the PEAK
+  // card, as in deepseek.models.ts (no time dimension in the schema; off-peak requests are over-shown 2x). The undated ids keep their
+  // flat rate, which now sits above the pro snapshot and below the flash one; deepseek-v4.1-flash is peak/off-peak from its listing.
+  {
+    // V4.1-Flash on DashScope (DeepSeek GA 2026-09-10): 552B MoE, native image input, ahead of V4-Pro-0813 on the agentic
+    // set. Curated visible, not hidden like the -0731 revision: this version-suffixed id is not a snapshot beside an undated
+    // twin (DashScope lists no 'deepseek-flash'), so it is the only route to V4.1 and the best flash tier here. Images work
+    // with thinking on and off; enable_thinking:false works; reasoning_effort enum minimal|low|medium|high|xhigh|max|ultra -
+    // 'none' 400s, so Off rides on enable_thinking as the dialect already does; no per-tier preamble tell, and max_tokens
+    // is not range-checked.
+    idPrefix: 'deepseek-v4.1-flash',
+    label: 'DeepSeek V4.1 Flash (Alibaba)',
+    parameterSpecs: _PS_DeepSeekEffort,
+    pubDate: '20260910', // = deepseek.models.ts 'deepseek-flash' (DeepSeek release, not the DashScope listing)
+    description: 'DeepSeek V4.1 Flash served via Alibaba Model Studio. Multimodal 552B MoE with 1M context, native image input, and thinking on by default.',
+    contextWindow: 1_000_000, // 1M (model page: 1,000,000 max input)
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Vision, LLM_IF_OAI_Reasoning],
+    maxCompletionTokens: 131072, // 128K house cap; the model page states 393216 (384K)
+    chatPrice: { input: 0.30, output: 1.20, cache: { read: 0.03 } }, // peak card (Singapore: busy 0.3/1.2 hit 0.03, idle half); in/out match DeepSeek-direct, the cache-hit is Alibaba's own 10%
+    // no benchmark: not on lmarena yet (released 2026-09-10)
+  },
   {
     idPrefix: 'deepseek-v4-pro',
     label: 'DeepSeek V4 Pro (Alibaba)',
     hidden: true, // superseded by the 0813 GA entry below; this undated id is also free-tier-quota-bound here (403 AllocationQuota.FreeTierOnly on live probe, 2026-08-14) while 0813 bills normally
     parameterSpecs: _PS_DeepSeekEffort,
-    pubDate: '20260623',
+    pubDate: '20260424', // = deepseek.models.ts 'deepseek-v4-pro' (upstream launch, not the DashScope listing; which checkpoint this undated id serves is undocumented - see the note above)
     description: 'DeepSeek V4 Pro served via Alibaba Model Studio (Alibaba pricing, well above DeepSeek-direct). 1M context, thinking.',
     contextWindow: 1_000_000, // 1M (Alibaba serves a decimal 1M window, not DeepSeek-direct's 1,048,576)
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning],
     maxCompletionTokens: 131072, // 128K house cap; the model page states 393216 (384K)
-    chatPrice: { input: 2.40, output: 4.80, cache: { cType: 'oai-ac', read: 0.20 } },
-    benchmark: { cbaElo: 1457 }, // lmarena: deepseek-v4-pro
+    chatPrice: { input: 2.40, output: 4.80, cache: { read: 0.20 } },
+    benchmark: { cbaElo: 1458 }, // lmarena: deepseek-v4-pro
   },
   {
     // GA release of V4 Pro (2026-08-13), superseding the April preview: same 1.6T/49B MoE, re-post-trained for agentic work
@@ -358,23 +482,23 @@ const _knownAlibabaChatModels = llmsDefineManualMappings([
     contextWindow: 1_000_000, // 1M (live-probed: 'Range of input length should be [1, 1000000]')
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning], // text-only (no vision); thinking on by default
     maxCompletionTokens: 131072, // 128K house cap; the model page states 393216 (384K)
-    chatPrice: { input: 2.40, output: 4.80, cache: { cType: 'oai-ac', read: 0.20 } },
-    benchmark: { cbaElo: 1457 }, // lmarena: deepseek-v4-pro (scored on the preview checkpoint; no 0813 human-vote entry yet)
+    chatPrice: { input: 1.32, output: 3.96, cache: { read: 0.132 } }, // peak card (Singapore model page: busy 1.32/3.96 hit 0.132, idle 0.66/1.98 hit 0.066); was flat 2.40/4.80 before 2026-08-17
+    benchmark: { cbaElo: 1458 }, // lmarena: deepseek-v4-pro (preview checkpoint; the board's 0813 row is AutoEval-only, not human votes)
   },
   {
     idPrefix: 'deepseek-v4-flash',
     label: 'DeepSeek V4 Flash (Alibaba)',
     parameterSpecs: _PS_DeepSeekEffort,
-    pubDate: '20260622',
+    pubDate: '20260424', // = deepseek.models.ts 'deepseek-v4-flash' (upstream launch, not the DashScope listing; undated id, checkpoint undocumented)
     description: 'DeepSeek V4 Flash served via Alibaba Model Studio. 1M context, thinking.',
     contextWindow: 1_000_000, // 1M (Alibaba serves a decimal 1M window)
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning],
     maxCompletionTokens: 131072, // 128K house cap; the model page states 393216 (384K)
-    chatPrice: { input: 0.20, output: 0.40, cache: { cType: 'oai-ac', read: 0.04 } },
-    benchmark: { cbaElo: 1436 }, // lmarena: deepseek-v4-flash
+    chatPrice: { input: 0.20, output: 0.40, cache: { read: 0.04 } },
+    benchmark: { cbaElo: 1435 }, // lmarena: deepseek-v4-flash
   },
   {
-    // pinnable 0731 revision (re-post-train, same arch/size/price); curated only so it lists with a clean label
+    // pinnable 0731 revision (re-post-train, same arch/size; structured outputs unsupported per its page); curated so it lists with a clean label
     idPrefix: 'deepseek-v4-flash-0731',
     label: 'DeepSeek V4 Flash 0731 (Alibaba)',
     parameterSpecs: _PS_DeepSeekEffort,
@@ -383,51 +507,64 @@ const _knownAlibabaChatModels = llmsDefineManualMappings([
     contextWindow: 1_000_000, // 1M
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning],
     maxCompletionTokens: 131072, // 128K house cap; the model page states 393216 (384K)
-    chatPrice: { input: 0.20, output: 0.40, cache: { cType: 'oai-ac', read: 0.04 } },
-    benchmark: { cbaElo: 1436 }, // lmarena: deepseek-v4-flash
-    hidden: true, // dated snapshot; deepseek-v4-flash is the mainline entry for this tier
+    chatPrice: { input: 0.44, output: 1.32, cache: { read: 0.044 } }, // peak card (Singapore model page: busy 0.44/1.32 hit 0.044, idle 0.22/0.66 hit 0.022); was flat 0.20/0.40 before 2026-08-17
+    benchmark: { cbaElo: 1435 }, // lmarena: deepseek-v4-flash
+    hidden: true, // dated snapshot; deepseek-v4-flash is the mainline entry for this tier (and now the cheaper one)
   },
   {
     idPrefix: 'glm-5.2',
     label: 'GLM-5.2 (Alibaba)',
-    parameterSpecs: _PS_Thinking,
-    pubDate: '20260626',
+    parameterSpecs: _PS_GlmEffort,
+    pubDate: '20260616', // = zai.models.ts 'glm-5.2' (Z.ai release, not the DashScope listing)
     description: 'Zhipu GLM-5.2 served via Alibaba Model Studio. 1M context, thinking.',
     contextWindow: 1048576, // 1M
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning],
     maxCompletionTokens: 131072, // 128K
-    chatPrice: { input: 1.40, output: 4.40, cache: { cType: 'oai-ac', read: 0.35 } }, // repriced 2026-07-24 (was 1.10/3.851); implicit hit = 25% of input for GLM (model page, identical in all 4 listed regions), not the usual 20%
+    chatPrice: { input: 1.40, output: 4.40, cache: { read: 0.28 } }, // repriced 2026-07-24 (was 1.10/3.851); implicit hit 0.28 on the Singapore model page since 2026-09-02 (was 0.35 = 25%; the Global regions still print 25% of 1.10)
     benchmark: { cbaElo: 1471 }, // lmarena: glm-5.2-max
   },
   {
     idPrefix: 'glm-5.2-fast',
     label: 'GLM-5.2 Fast (Alibaba)',
-    parameterSpecs: _PS_Thinking,
+    parameterSpecs: _PS_Thinking, // effort tiers unverified on the fast tier (free-quota-only on our key), binary toggle kept
     pubDate: '20260710',
     description: 'Zhipu GLM-5.2 fast-serving tier via Alibaba Model Studio (preview). Same model, lower latency, ~2x price.',
-    contextWindow: 1048576, // 1M (assumed = glm-5.2)
+    contextWindow: 1048576, // 1M (model page https://www.alibabacloud.com/help/en/model-studio/glm-5-2-fast, verified 2026-08-16)
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning],
     maxCompletionTokens: 131072, // 128K (live-probed 2026-07-24)
-    chatPrice: { input: 2.80, output: 8.80, cache: { cType: 'oai-ac', read: 0.70 } }, // cache = the 25% GLM implicit-hit rate (no model page of its own)
-    hidden: true, // preview-only for now (live id: glm-5.2-fast-preview); un-hide when GA
+    chatPrice: { input: 2.80, output: 8.80, cache: { read: 0.56 } }, // Intl/Singapore price-table rows; implicit hit 0.56 on the model page's new Singapore row (2026-09-02; Beijing still 0.55 on 2.2 = 25%)
+    hidden: true, // preview-only for now (live id: glm-5.2-fast-preview, still preview 2026-08-16); un-hide when GA
   },
   {
     idPrefix: 'glm-5.1', label: 'GLM-5.1 (Alibaba)', pubDate: '20260407', hidden: true,
     description: 'Zhipu GLM-5.1 served via Alibaba Model Studio, superseded by GLM-5.2. 200K context, thinking.',
     parameterSpecs: _PS_Thinking,
-    contextWindow: 204800, maxCompletionTokens: 131072, // 200K in / 128K out
+    contextWindow: 202745, maxCompletionTokens: 131072, // 202,745 in (model page + live 'Range of input length' probe 2026-08-16; 169,984 with thinking on) / 128K out
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning],
-    chatPrice: { input: 1.40, output: 4.40 },
+    chatPrice: { input: 1.40, output: 4.40, cache: { read: 0.28 } }, // cache = 20% implicit-hit rate per the model page (0.165 on 0.825, all regions)
+  },
+  {
+    // Live on DashScope since the 08-17 pass; model page published 2026-08-24. Singapore $3/$15 with implicit cache 0.30
+    // (10% of input here, not the usual Kimi 20%); no price-table row yet. Unlike K2.7 Code, thinking can be turned off.
+    idPrefix: 'kimi-k3',
+    label: 'Kimi K3 (Alibaba)',
+    parameterSpecs: _PS_KimiEffort,
+    pubDate: '20260716', // = moonshot.models.ts 'kimi-k3' (Moonshot release, not the DashScope listing)
+    description: 'Moonshot Kimi K3 flagship served via Alibaba Model Studio. Multimodal, thinking on by default, 1M context.',
+    contextWindow: 1048576, // 1M (live-probed: 'Range of input length should be [1, 1048576]')
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Vision, LLM_IF_OAI_Reasoning],
+    maxCompletionTokens: 131072, // house cap; live ceiling is 1,048,576 (= context window)
+    chatPrice: { input: 3.00, output: 15.00, cache: { read: 0.30 } },
   },
   {
     idPrefix: 'kimi-k2.7-code',
     label: 'Kimi K2.7 Code (Alibaba)',
-    pubDate: '20260626',
+    pubDate: '20260612', // = moonshot.models.ts 'kimi-k2.7-code' (Moonshot release, not the DashScope listing)
     description: 'Moonshot Kimi K2.7 Code served via Alibaba Model Studio. Multimodal, always-on thinking, 256K context.',
     contextWindow: 262144, // 256K
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Vision, LLM_IF_OAI_Reasoning],
     maxCompletionTokens: 131072, // house cap; live ceiling is 262144 (256K, = context window)
-    chatPrice: { input: 0.95, output: 4.00, cache: { cType: 'oai-ac', read: 0.19 } }, // repriced 2026-07-24 (was 0.8939/3.7131); cache = 20% implicit-hit rule (explicit: create 1.1875 / read 0.095)
+    chatPrice: { input: 0.95, output: 4.00, cache: { read: 0.19 } }, // repriced 2026-07-24 (was 0.8939/3.7131); cache = 20% implicit-hit rule (explicit: create 1.1875 / read 0.095)
   },
   {
     idPrefix: 'deepseek-v3.2',

@@ -65,7 +65,6 @@ interface AppChatStore {
   filterIsArchived: boolean;
   toggleFilterIsArchived: () => void;
 
-  // [Age filter patch]
   filterOlderThanDays: number | null;
   setFilterOlderThanDays: (days: number | null) => void;
 
@@ -134,7 +133,7 @@ const useAppChatStore = create<AppChatStore>()(persist(
 
     // Chat UI
 
-    clearFilters: () => _set({ filterIsArchived: false, filterHasBeamOpen: false, filterHasDocFragments: false, filterHasImageAssets: false, filterHasStars: false, filterOlderThanDays: null /* [Age filter patch] */ }),
+    clearFilters: () => _set({ filterIsArchived: false, filterHasBeamOpen: false, filterHasDocFragments: false, filterHasImageAssets: false, filterHasStars: false, filterOlderThanDays: null }),
 
     filterHasBeamOpen: false,
     toggleFilterHasBeamOpen: () => _set(({ filterHasBeamOpen }) => ({ filterHasBeamOpen: !filterHasBeamOpen })),
@@ -151,7 +150,6 @@ const useAppChatStore = create<AppChatStore>()(persist(
     filterIsArchived: false,
     toggleFilterIsArchived: () => _set(({ filterIsArchived }) => ({ filterIsArchived: !filterIsArchived })),
 
-    // [Age filter patch]
     filterOlderThanDays: null,
     setFilterOlderThanDays: (filterOlderThanDays: number | null) => _set({ filterOlderThanDays }),
 
@@ -251,9 +249,6 @@ export const getChatAutoAI = (): {
   autoVndAntBreakpoints: boolean,
 } => useAppChatStore.getState();
 
-export const useChatAutoSuggestHTMLUI = (): boolean =>
-  useAppChatStore(state => state.autoSuggestHTMLUI);
-
 export const useChatAutoSuggestAttachmentPrompts = (): boolean =>
   useAppChatStore(state => state.autoSuggestAttachmentPrompts);
 
@@ -276,11 +271,11 @@ export function useChatDrawerFilters() {
     filterHasImageAssets: state.filterHasImageAssets,
     filterHasStars: state.filterHasStars,
     filterIsArchived: state.filterIsArchived,
-    filterOlderThanDays: state.filterOlderThanDays, // [Age filter patch]
+    filterOlderThanDays: state.filterOlderThanDays,
     showPersonaIcons: state.showPersonaIcons2,
     showRelativeSize: state.showRelativeSize,
     clearFilters: state.clearFilters,
-    setFilterOlderThanDays: state.setFilterOlderThanDays, // [Age filter patch]
+    setFilterOlderThanDays: state.setFilterOlderThanDays,
     toggleFilterHasBeamOpen: state.toggleFilterHasBeamOpen,
     toggleFilterHasDocFragments: state.toggleFilterHasDocFragments,
     toggleFilterHasImageAssets: state.toggleFilterHasImageAssets,

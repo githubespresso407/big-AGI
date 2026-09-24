@@ -10,11 +10,17 @@ import { persist } from 'zustand/middleware';
 //  - Chat Mode: Follow-Ups; moved to Chat Advanced UI
 interface UXLabsStore {
 
-  labsHighPerformance: boolean;
-  setLabsHighPerformance: (labsHighPerformance: boolean) => void;
+  labsAdaptiveRendering: 'auto' | 'on' | 'off' | 'debug'; // lighter rendering of streaming blocks: when heavy, always, never, as auto + highlight + log
+  setLabsAdaptiveRendering: (labsAdaptiveRendering: 'auto' | 'on' | 'off' | 'debug') => void;
+
+  labsUnlockRefresh: boolean; // ex 'labsHighPerformance' (Labs toggle, removed) - renamed to reset it; switch in the AI Inspector, commented out
+  setLabsUnlockRefresh: (labsUnlockRefresh: boolean) => void;
 
   labsAutoHideComposer: boolean;
   setLabsAutoHideComposer: (labsAutoHideComposer: boolean) => void;
+
+  labsScreenWakeLock: boolean; // mobile: keep the screen on while generations run - default on, no UI yet
+  setLabsScreenWakeLock: (labsScreenWakeLock: boolean) => void;
 
   labsShowShortcutBar: boolean;
   setLabsShowShortcutBar: (labsShowShortcutBar: boolean) => void;
@@ -34,11 +40,17 @@ export const useUXLabsStore = create<UXLabsStore>()(
   persist(
     (set) => ({
 
-      labsHighPerformance: false,
-      setLabsHighPerformance: (labsHighPerformance: boolean) => set({ labsHighPerformance }),
+      labsAdaptiveRendering: 'off', // opt-in while in Labs
+      setLabsAdaptiveRendering: (labsAdaptiveRendering: 'auto' | 'on' | 'off' | 'debug') => set({ labsAdaptiveRendering }),
+
+      labsUnlockRefresh: false,
+      setLabsUnlockRefresh: (labsUnlockRefresh: boolean) => set({ labsUnlockRefresh }),
 
       labsAutoHideComposer: false,
       setLabsAutoHideComposer: (labsAutoHideComposer: boolean) => set({ labsAutoHideComposer }),
+
+      labsScreenWakeLock: true,
+      setLabsScreenWakeLock: (labsScreenWakeLock: boolean) => set({ labsScreenWakeLock }),
 
       labsShowShortcutBar: true,
       setLabsShowShortcutBar: (labsShowShortcutBar: boolean) => set({ labsShowShortcutBar }),
@@ -59,15 +71,24 @@ export const useUXLabsStore = create<UXLabsStore>()(
       // Migrations:
       // - 1: turn on the screen capture by default (subsequently removed)
       version: 1,
+      migrate: (state: any): UXLabsStore => state, // no shape change here: passthrough re-stamps older blobs, keeps unknown fields
 
     },
   ),
 );
 
 export function getLabsHighPerformance() {
-  return useUXLabsStore.getState().labsHighPerformance;
+  return useUXLabsStore.getState().labsUnlockRefresh;
 }
 
 export function getLabsLosslessImages() {
   return useUXLabsStore.getState().labsLosslessImages;
+}
+
+export function getLabsScreenWakeLock() {
+  return useUXLabsStore.getState().labsScreenWakeLock;
+}
+
+export function useLabsAdaptiveRendering() {
+  return useUXLabsStore((s) => s.labsAdaptiveRendering);
 }
