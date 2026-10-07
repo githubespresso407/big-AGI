@@ -84,6 +84,8 @@ export const EditorialDefaults = {
     { vendor: 'bedrock',    modelId: 'us.anthropic.claude-opus-4-7-thinking' },
     { vendor: 'bedrock',    modelId: 'global.anthropic.claude-opus-4-7-thinking' },
     { vendor: 'openrouter', modelId: 'anthropic/claude-opus-4-7' },
+    { vendor: 'openai',     modelId: 'gpt-6.1-sol' }, // 2026-09-29 - "near-Astra" on coding, computer use and professional work at a fifth of Astra's price ($2/$10)
+    { vendor: 'openrouter', modelId: 'openai/gpt-6.1-sol' },
     { vendor: 'openai',     modelId: 'gpt-6-astra' }, // 2026-09-03 - new flagship; $10/$50 (2.5x Sol per token, OpenAI claims lower cost per task)
     { vendor: 'openrouter', modelId: 'openai/gpt-6-astra' },
     { vendor: 'openai',     modelId: 'gpt-6-sol' }, // 2026-09-22 - succeeds 5.6 Sol at half the price ($2/$10), ~1.5x its streaming speed
@@ -92,11 +94,14 @@ export const EditorialDefaults = {
     { vendor: 'openrouter', modelId: 'openai/gpt-5.6-sol' },
     { vendor: 'openai',     modelId: 'gpt-5.5' },
     { vendor: 'openrouter', modelId: 'openai/gpt-5.5' },
+    { vendor: 'googleai',   modelId: 'models/gemini-4-argon' }, // SPECULATIVE: announced 2026-09-30, API-gated; Elo 1525 prelim (#1), $2/$10 intro. Prefix match also takes '-preview'
+    { vendor: 'openrouter', modelId: 'google/gemini-4-argon' },
     { vendor: 'googleai',   modelId: 'models/gemini-3.7-flash' }, // 2026-08-13 GA - newest Flash flagship (Elo 1490 prelim vs 1485, same intro price as 3.6, big agentic/coding gains)
     { vendor: 'googleai',   modelId: 'models/gemini-3.6-flash' }, // 2026-07-21 GA - above 3.5 Flash (Elo 1485 vs 1476, cheaper output)
     { vendor: 'googleai',   modelId: 'models/gemini-3.5-flash' },
     { vendor: 'anthropic',  modelId: 'claude-opus-4-6' },
     { vendor: 'googleai',   modelId: 'models/gemini-3.1-pro-preview' },
+    { vendor: 'anthropic',  modelId: 'claude-sonnet-5-5' }, // launched 2026-09-28
     { vendor: 'anthropic',  modelId: 'claude-sonnet-4-6' },
     { vendor: 'xai',        modelId: 'grok-4.7' }, // 2026-09-21 GA - larger base than 4.6, same price
     { vendor: 'xai',        modelId: 'grok-4.6' }, // 2026-08-12 GA - frontier for coding/agentic/knowledge work, extends 4.5
@@ -121,6 +126,7 @@ export const EditorialDefaults = {
     { vendor: 'openrouter', modelId: 'google/gemini-3.5-flash' },
     { vendor: 'openai',     modelId: 'gpt-5.3-codex' },
     { vendor: 'openrouter', modelId: 'openai/gpt-5.3-codex' },
+    { vendor: 'openai',     modelId: 'gpt-6.1-sol' }, // 2026-09-29 - "exceptionally strong on agentic coding", same price as 6 Sol
     { vendor: 'openai',     modelId: 'gpt-6-sol' }, // 2026-09-22 - "built for complex coding and agentic workflows"
     { vendor: 'openai',     modelId: 'gpt-5.6-sol' }, // 2026-07-09 GA - "strongest yet for agentic coding"; codex still preferred for apply
     { vendor: 'openai',     modelId: 'gpt-5.5' },
@@ -128,6 +134,7 @@ export const EditorialDefaults = {
     { vendor: 'bedrock',    modelId: 'us.anthropic.claude-sonnet-4-6' },
     { vendor: 'bedrock',    modelId: 'global.anthropic.claude-sonnet-4-6' },
     { vendor: 'openrouter', modelId: 'anthropic/claude-sonnet-4-6' },
+    { vendor: 'anthropic',  modelId: 'claude-sonnet-5-5' }, // launched 2026-09-28 - after 4.6, which doesn't think by default
     { vendor: 'anthropic',  modelId: 'claude-opus-5-5' }, // launched 2026-09-22
     { vendor: 'anthropic',  modelId: 'claude-opus-5' }, // launched 2026-07-24
     { vendor: 'anthropic',  modelId: 'claude-opus-4-8' },
@@ -182,6 +189,7 @@ export const EditorialDefaults = {
     { vendor: 'googleai',   modelId: 'models/gemini-3.5-flash' },
     { vendor: 'openrouter', modelId: 'google/gemini-3.5-flash' },
     { vendor: 'anthropic',  modelId: 'claude-sonnet-4-6' },
+    { vendor: 'anthropic',  modelId: 'claude-sonnet-5-5' }, // launched 2026-09-28 - after 4.6, which doesn't think by default
     { vendor: 'anthropic',  modelId: 'claude-opus-5-5' }, // launched 2026-09-22
     { vendor: 'anthropic',  modelId: 'claude-opus-5' }, // launched 2026-07-24
     { vendor: 'anthropic',  modelId: 'claude-opus-4-8' },

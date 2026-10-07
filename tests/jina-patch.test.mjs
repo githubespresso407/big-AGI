@@ -83,7 +83,8 @@ async function workerJina(targetUrl, transforms, apiKey) {
 try {
   const page = await workerJina('https://example.com', ['markdown', 'text'], JINA_KEY);
   check('live: r.jina.ai fetch example.com', page.stopReason === 'end', page.error || `title="${page.title}"`);
-  check('live: markdown content present', !!page.content?.markdown?.includes('Example Domain'));
+  // The reader returns the page title separately; it need not appear in the body.
+  check('live: markdown content present', !!page.content?.markdown?.includes('documentation examples'));
   check('live: text transform filled', !!page.content?.text);
   const htmlOnly = await workerJina('https://example.com', ['html'], JINA_KEY);
   check('live: html-only request errors cleanly', !!htmlOnly.error && htmlOnly.stopReason === 'error');

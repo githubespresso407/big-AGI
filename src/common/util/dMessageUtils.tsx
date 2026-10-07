@@ -30,10 +30,11 @@ const ANIM_BUSY_PAINTING = 'https://i.giphy.com/media/5t9ujj9cMisyVjUZ0m/giphy.w
 const ANIM_BUSY_THINKING = 'https://i.giphy.com/media/l44QzsOLXxcrigdgI/giphy.webp';
 
 
+// Set --AGI-Avatar-size on a parent to override (defaults to 36px)
 export const avatarIconSx = {
   borderRadius: 'sm',
-  height: 36,
-  width: 36,
+  height: 'var(--AGI-Avatar-size, 36px)',
+  width: 'var(--AGI-Avatar-size, 36px)',
 } as const;
 
 // const largerAvatarIconsSx = {
@@ -43,8 +44,8 @@ export const avatarIconSx = {
 // };
 
 const aixSkipBoxSx = {
-  height: 36,
-  width: 36,
+  height: 'var(--AGI-Avatar-size, 36px)',
+  width: 'var(--AGI-Avatar-size, 36px)',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
@@ -192,8 +193,8 @@ export function makeMessageAvatarIcon(
           fontSize: '24px',
           textAlign: 'center',
           width: '100%',
-          minWidth: `${avatarIconSx.width}px`,
-          lineHeight: `${avatarIconSx.height}px`,
+          minWidth: 'var(--AGI-Avatar-size, 36px)',
+          lineHeight: 'var(--AGI-Avatar-size, 36px)',
         }}>
           {symbol}
         </Box>;
@@ -318,6 +319,13 @@ export function prettyMessageMetrics(metrics: DMessageGenerator['metrics'], uiCo
   const $cEstimated = (metrics.$cReported !== undefined && metrics.$c !== undefined) ? metrics.$c : undefined;
   // cost by class, when cache or tools are in play
   const showCostByClass = metrics.$cCacheR !== undefined || metrics.$cCacheW !== undefined || metrics.$cTools !== undefined;
+  // hosted tool calls: counts on their own row; priced only where the vendor bills per call (searches)
+  const toolCountsAll: [count: number | undefined, one: string, many: string][] = [
+    [metrics.nWebSearch, 'search', 'searches'],
+    [metrics.nWebFetch, 'fetch', 'fetches'],
+    [metrics.nCodeExec, 'code execution', 'code executions'],
+  ];
+  const toolCounts = toolCountsAll.filter((t): t is [number, string, string] => !!t[0]);
 
   return <Box sx={tooltipMetricsGridSx}>
 
@@ -330,7 +338,12 @@ export function prettyMessageMetrics(metrics: DMessageGenerator['metrics'], uiCo
       {', '}<b>{metrics.TOut?.toLocaleString() || ''}</b> out
       {metrics.TOutR !== undefined && <> (<b>{metrics.TOutR?.toLocaleString() || ''}</b> for reasoning)</>}
       {/*{metrics.TOutA !== undefined && <> (<b>{metrics.TOutA?.toLocaleString() || ''}</b> for audio)</>}*/}
-      {!!metrics.nWebSearch && <>{', '}<b>{metrics.nWebSearch.toLocaleString()}</b> {metrics.nWebSearch === 1 ? 'search' : 'searches'}</>}
+    </div>}
+
+    {/* Tools */}
+    {toolCounts.length > 0 && <div>Tools:</div>}
+    {toolCounts.length > 0 && <div>
+      {' '}{toolCounts.map(([n, one, many], i) => <React.Fragment key={one}>{i > 0 && ' · '}<b>{n.toLocaleString()}</b> {n === 1 ? one : many}</React.Fragment>)}
     </div>}
 
     {/* Timings */}
@@ -638,6 +651,7 @@ function _prettyGeminiModelName(cutModel: string): string {
     .replace('flash', 'Flash')
     .replace('max', 'Max')
     .replace('lite', 'Lite')
+    .replace('argon', 'Argon') // Gemini 4 tier name
     .replace(/(\d)b\b/g, '$1B') // size token: '31b' -> '31B' (e.g. Gemma 4 31B)
     // feature variants
     .replace('robotics er', 'Robotics')

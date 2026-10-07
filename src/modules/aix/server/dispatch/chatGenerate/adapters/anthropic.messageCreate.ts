@@ -218,16 +218,20 @@ export function aixToAnthropicMessageCreate(target: AixAnthropicTarget, model: A
 
   // [Anthropic] Thinking and tool-choice constraints by family, newest first (all probed live):
   //   Fable/Mythos 5.x, Opus 5.5        adaptive only, always on: 'disabled' 400; forced tool_choice ('any'/'tool') 400
+  //   Sonnet 5.5                        adaptive only; on by default; off is 'between_tools' ('disabled' 400) at effort <= high only (clamped below); forced tool_choice 400
   //   Opus 5                            adaptive only; on by default; 'disabled' OK at effort <= high only (xhigh/max 400, clamped below) - the Thinking switch
   //   Sonnet 5, Opus 4.8 / 4.7          adaptive only (budget_tokens 400); 'disabled' OK at every effort; on by default on Sonnet 5, off on 4.x
   //   4.6                               adaptive + deprecated budgets; off by default; 'disabled' OK
   //   4.5 and earlier                   extended thinking only (budget_tokens); 'adaptive' 400
   // From 4.7 up, temperature != 1, top_p, top_k and assistant prefill are 400 in any thinking mode.
-  // Forward-compatible: every Fable/Mythos/Opus 5.x is assumed always-on, with Opus 5 itself carved out (bare id, or dated / Bedrock '-vN:M' suffixed).
+  // Forward-compatible: every Fable/Mythos/Opus 5.x is assumed always-on, with Opus 5 itself carved out (bare id, or dated / Bedrock '-vN:M' suffixed);
+  // every Sonnet 5.x is assumed to turn thinking off with 'between_tools', with Sonnet 5 itself carved out the same way.
   const isOpus5Base = /claude-opus-5(?:-\d{8})?(?:-v\d+(?::\d+)?)?$/.test(model.id);
+  const isSonnet5Base = /claude-sonnet-5(?:-\d{8})?(?:-v\d+(?::\d+)?)?$/.test(model.id);
   const hotFixAdaptiveThinkingOnlyModel = !isOpus5Base && /claude-(fable|mythos|opus)-5/.test(model.id); // 'disabled' and budgets both coerced to adaptive
+  const hotFixThinkingOffIsBetweenTools = !isSonnet5Base && /claude-sonnet-5/.test(model.id); // 'disabled' sent as 'between_tools'
   const hotFixNoBudgetTokensModel = /claude-(fable|mythos|opus|sonnet)-5|claude-(opus|sonnet)-4-[78]/.test(model.id); // budgets coerced to adaptive
-  const hotFixNoForcedToolUse = hotFixAdaptiveThinkingOnlyModel; // the same family set today; a separate name for when it diverges
+  const hotFixNoForcedToolUse = hotFixAdaptiveThinkingOnlyModel || hotFixThinkingOffIsBetweenTools;
 
   // Forced tool use -> 'auto' + a system hint: empirically the model still calls the tool. Forced tool use is deprecated AIX-wide, see ToolsPolicy_schema.
   if (hotFixNoForcedToolUse && payload.tool_choice && (payload.tool_choice.type === 'any' || payload.tool_choice.type === 'tool')) {
@@ -264,9 +268,8 @@ export function aixToAnthropicMessageCreate(target: AixAnthropicTarget, model: A
       };
       delete payload.temperature;
     } else {
-      payload.thinking = {
-        type: 'disabled',
-      };
+      // Sonnet 5.5+: 'disabled' 400s - 'between_tools' is the lowest setting (no up-front thinking; progress updates between tool calls still arrive as thinking)
+      payload.thinking = hotFixThinkingOffIsBetweenTools ? { type: 'between_tools' } : { type: 'disabled' };
       // NOTE: with thinking disabled, we can still use temperature, so we don't delete it
       //       see the note on llms.parameters.ts: 'llmVndAntThinkingBudget'
     }
@@ -275,15 +278,16 @@ export function aixToAnthropicMessageCreate(target: AixAnthropicTarget, model: A
   // [Anthropic, 2026-09-01] Preserved thinking: on Fable 5.1+ a replayed thinking block is valid only against the unchanged
   // system/tools/history prefix, and new accounts 400 after any edit (routine here: edits, deletes, persona/tool changes).
   // 'drop_block' drops the stale blocks instead (accepted on every model, probed); the parser relays the drops as 'vnt' void-notice particles.
-  if (hostedFeatures.enableThinkingBindingControls && payload.thinking && payload.thinking.type !== 'disabled')
+  // Not on 'between_tools' (400 'Extra inputs'): there, an edited history replaying Sonnet 5.5 thinking blocks can still 400 on new accounts.
+  if (hostedFeatures.enableThinkingBindingControls && (payload.thinking?.type === 'adaptive' || payload.thinking?.type === 'enabled'))
     payload.thinking.block_binding = { prefix_mismatch_behavior: 'drop_block' };
 
   // [Anthropic] Effort parameter
   const reasoningEffort = model.reasoningEffort; // ?? model.vndAntEffort;
   if (reasoningEffort) {
     if (reasoningEffort === 'none' || reasoningEffort === 'minimal') throw new Error(`Anthropic API does not support '${reasoningEffort}' effort level`);
-    // Opus 5 accepts 'disabled' only at effort <= 'high' (Sonnet 5 and 4.x at every effort, see the family table) - silently clamp rather than fail the turn
-    const clampToHigh = isOpus5Base && payload.thinking?.type === 'disabled' && ['xhigh', 'max'].includes(reasoningEffort);
+    // Opus 5 'disabled' and Sonnet 5.5 'between_tools' are legal only at effort <= 'high' (Sonnet 5 and 4.x 'disabled' at every effort, see the family table) - silently clamp rather than fail the turn
+    const clampToHigh = ((isOpus5Base && payload.thinking?.type === 'disabled') || payload.thinking?.type === 'between_tools') && ['xhigh', 'max'].includes(reasoningEffort);
     payload.output_config = {
       effort: clampToHigh ? 'high' : reasoningEffort,
     };
@@ -368,6 +372,24 @@ export function aixToAnthropicMessageCreate(target: AixAnthropicTarget, model: A
     // Merge hosted tools with custom tools
     if (hostedTools.length > 0) {
       payload.tools = payload.tools ? [...payload.tools, ...hostedTools] : hostedTools;
+
+      /**
+       * Hosted tools run in a server-side agentic loop, and every iteration re-samples the whole growing turn.
+       * The API places an automatic cache breakpoint on each server tool result before the next iteration, but
+       * only when the request already carries at least one `cache_control` marker ("Server tool results are
+       * cached automatically", Tool use with prompt caching). A request with no marker gets no breakpoint at
+       * all, so each iteration re-reads the turn as fresh input: a 10-search turn on a 300-token prompt billed
+       * ~490K input tokens with 0 cached (measured 2026-09-24); the same turn with one marker reads ~450K from
+       * cache at a quarter of the price or less.
+       *
+       * The client's automatic breakpoints (historyApply_vndAntCachingFlags) skip histories under ~1000 tokens,
+       * the vendor's cacheable minimum - exactly the shape of a short research question. So when hosted tools
+       * are on and no marker made it into the request, ask for automatic caching at the top level: the marker
+       * itself may be too small to cache, but it is what turns on the per-iteration breakpoints. Claude API
+       * only: Bedrock rejects the top-level field.
+       */
+      if (target === 'anthropic' && !_hasAnyCacheControl(systemMessage, chatMessages, payload.tools))
+        payload.cache_control = { type: 'ephemeral' };
     }
   }
 
@@ -438,7 +460,7 @@ export function aixToAnthropicMessageCreate(target: AixAnthropicTarget, model: A
     delete payload.speed;
 
     // Preserved-thinking controls: 400 'thinking.adaptive.block_binding: Extra inputs are not permitted' (never set for this target)
-    if (payload.thinking && payload.thinking.type !== 'disabled')
+    if (payload.thinking?.type === 'adaptive' || payload.thinking?.type === 'enabled')
       delete payload.thinking.block_binding;
   }
 
@@ -452,6 +474,15 @@ export function aixToAnthropicMessageCreate(target: AixAnthropicTarget, model: A
   return validated.data;
 }
 
+
+/** Whether the request already carries a cache breakpoint anywhere: system, message blocks, or tool definitions. */
+function _hasAnyCacheControl(systemMessage: TRequest['system'], chatMessages: TRequest['messages'], tools: TRequest['tools']): boolean {
+  if (systemMessage?.some(block => !!block.cache_control))
+    return true;
+  if (chatMessages.some(message => message.content.some(block => 'cache_control' in block && !!block.cache_control)))
+    return true;
+  return !!tools?.some(tool => 'cache_control' in tool && !!tool.cache_control);
+}
 
 /** Enforce the Anthropic 4-breakpoint API limit by un-stamping the earliest (prefix-redundant) breakpoints. */
 function _capTrailingCacheBreakpoints(systemMessage: TRequest['system'], chatMessages: TRequest['messages'], maxBreakpoints: number): void {

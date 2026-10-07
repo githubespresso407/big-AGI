@@ -571,7 +571,7 @@ export namespace AixWire_API {
     // Gemini
     vndGeminiAPI: z.enum(['interactions-agent']).optional(), // opt-in per-model API dialect; unset = generateContent
     vndGeminiAgentViz: z.enum(['auto', 'off']).optional(), // agent_config.visualization; default 'auto' upstream
-    vndGeminiAspectRatio: z.enum(['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9', '21:9']).optional(),
+    vndGeminiAspectRatio: z.enum(['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9', '1:4', '4:1', '1:8', '8:1']).optional(),
     vndGeminiCodeExecution: z.enum(['auto']).optional(),
     vndGeminiComputerUse: z.enum(['browser']).optional(),
     vndGeminiEnvironmentId: z.string().optional(), // [vndGeminiAPI === 'interactions-agent'] Gemini Interactions API session/sandbox handle from a prior turn (forward-carry; best-effort - if upstream rejects the env, the request fails and the error surfaces)
@@ -589,7 +589,7 @@ export namespace AixWire_API {
     vndOaiContainerId: z.string().optional(), // [Responses] reuse a prior code-interpreter session container (caller checks expiry before setting)
     vndOaiImageGeneration: z.enum(['mq', 'hq', 'max', 'hq_edit' /* legacy -> hq */, 'hq_png' /* legacy -> hq */]).optional(), // legacy values still accepted from older bundles
     vndOaiReasoningMode: z.enum(['standard', 'pro']).optional(), // [2026-07-09, OpenAI] [Responses] GPT-5.6+ reasoning.mode - 'pro' performs additional model work, billed at standard rates
-    vndOaiServiceTier: z.enum(['flex', 'fast']).optional(), // [2026-09-03, OpenAI] request service_tier: flex (0.5x, slower) | fast (2x, faster); native OpenAI only
+    vndOaiServiceTier: z.enum(['flex', 'fast', 'ultrafast']).optional(), // [2026-09-03, OpenAI] request service_tier: flex (0.5x, slower) | fast (2x, faster) | ultrafast (6x, fastest; Responses only, 2026-09-29); native OpenAI only
     vndOaiResponsesAPI: z.boolean().optional(),
     vndOaiRestoreMarkdown: z.boolean().optional(),
     vndOaiVerbosity: z.enum(['low', 'medium', 'high']).optional(),
@@ -813,6 +813,8 @@ export namespace AixWire_Particles {
 
     // n = Counts of per-call billed server tools
     nWebSearch?: number,  // web searches executed
+    nWebFetch?: number,   // web fetches executed
+    nCodeExec?: number,   // hosted code executions, container sub-tools included
 
     // dt = milliseconds
     dtStart?: number,
@@ -861,9 +863,10 @@ export namespace AixWire_Particles {
      * - `nt` (notice type) carries the structured facts of each notice, so clients can later filter, log
      *   or render a type specially without re-parsing text; add a variant per new notice, no catch-all
      */
-    | { p: 'vnt', text: string, detail?: string } & (
+    | { p: 'vnt', text: string, detail?: string, level?: 'warn' } & ( // `level` 'warn': the sender judged this notice unexpected (e.g. a reasoning reset inside a paused turn); default is informational
       | { nt: 'input-transform', itt: 'thinking-dropped', cause: 'prefix-changed' | 'model-switch' | (string & {}), reason: string, paths: string[] } // the server rewrote our request: dropped replayed thinking blocks, one particle per vendor reason; `cause` normalizes `reason` (open set), `paths` are wire locations. 'prefix-changed' is deliberately unspecific: the vendor's 'prefix_binding_mismatch' covers system/tools/message edits alike and doesn't say which - don't narrow it to "history edited" in copy, that's provably wrong for tool/system changes. client-side log for now
       | { nt: 'hres-discarded', kind: 'vnd.ant.file', fileId: string, filename?: string } // a provider-hosted file deleted by the Save policy without embedding; it may still exist in the model's sandbox
+      | { nt: 'flow-cont', kind: 'vnd.ant.pause_turn', turn: number } // the generation continued in a new upstream request at this point (hosted-tool loop paused itself); rendered as a divider, `turn` is the 1-based continuation count
       )
     | { p: 'hres' } & ( // hosted resource - provider-hosted resource
       | { kind: 'vnd.ant.file', fileId: string, containerId?: string }
