@@ -60,19 +60,28 @@ on top of upstream `enricoros/big-AGI`. All changes are marked with
 
 ## Revert
 
+Do not reset or force-push main. Vercel deploys every push, and rewritten history breaks other clones. Undo by adding commits on top of main:
+
 ```bash
-git reset --hard pre-jina-restore
-git push --force origin main   # Vercel redeploys upstream state
+git revert <patch-commit-sha>        # one patch commit at a time, newest first
+git revert -m 1 <sync-merge-sha>     # undo an upstream sync merge
 ```
+
+The tag `pre-jina-restore` marks the state before the Jina patch. `git diff pre-jina-restore HEAD -- <files>` shows what changed since then.
 
 ## Syncing upstream
 
 ```bash
 git remote add upstream https://github.com/enricoros/big-AGI.git   # once
 git fetch upstream
-git merge upstream/main    # conflicts unlikely: all hunks are additive & marked
-git push origin main
+git tag pre-upstream-<YYYY-MM-DD>-restore HEAD
+git push origin pre-upstream-<YYYY-MM-DD>-restore
+git merge-tree --write-tree --name-only HEAD upstream/main         # dry run: lists conflicts
+git merge --no-ff --no-commit upstream/main
 ```
 
-If upstream restructures `browse.router.ts` or `search.router.ts`, re-apply by
-searching for `[Jina patch]` in the pre-merge tree.
+Resolve conflicts. If upstream has adopted a feature the fork also implemented (the chat age filter is one), keep upstream's version and drop the fork copy rather than keeping both. Keep npm's package-lock.json rewrites out of commits.
+
+Test before pushing: `npm ci`, `npm test`, `node tests/jina-patch.test.mjs`, `tsc --noEmit`, `npm run lint`, `npm run build`. Then commit and `git push origin main`, which triggers the Vercel production deploy.
+
+If upstream restructures `browse.router.ts` or `search.router.ts`, re-apply by searching for `[Jina patch]` in the pre-merge tree.
