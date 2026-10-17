@@ -5,7 +5,6 @@ import { useModuleBeamStore } from '~/modules/beam/store-module-beam';
 import type { DFolder } from '~/common/stores/folders/store-chat-folders';
 import { DMessage, DMessageUserFlag, MESSAGE_FLAG_STARRED, messageFragmentsReduceText, messageHasUserFlag, messageUserFlagToEmoji } from '~/common/stores/chat/chat.message';
 import { conversationTitle, DConversationId } from '~/common/stores/chat/chat.conversation';
-import { filterOlderThanMatches } from './ageFilter'; // [Age filter patch]
 import { createTimeBucketClassifierEn } from '~/common/util/timeUtils';
 import { isAttachmentFragment, isContentOrAttachmentFragment, isDocPart, isImageRefPart, isZyncAssetImageReferencePart } from '~/common/stores/chat/chat.fragments';
 import { shallowEquals } from '~/common/util/hooks/useShallowObject';
@@ -97,6 +96,7 @@ export function useChatDrawerRenderItems(
   searchSorting: ChatSearchSorting,
   showRelativeSize: boolean,
   searchDepth: ChatSearchDepth,
+  queryIncludeArchived: boolean,
 ): ChatDrawerRenderItems {
 
   // state
@@ -117,20 +117,22 @@ export function useChatDrawerRenderItems(
 
   return useChatStore(({ conversations: convPreFilter }) => {
 
+      const { isSearching, lcTextQuery } = isDrawerSearching(filterByQuery);
+
       // filter 0: archival status
-      const conversations = filterIsArchived ? convPreFilter.filter(c => !!c.isArchived)
-        : convPreFilter.filter(c => !c.isArchived);
+      const conversations =
+        isSearching && queryIncludeArchived ? convPreFilter
+          : filterIsArchived ? convPreFilter.filter(c => !!c.isArchived)
+            : convPreFilter.filter(c => !c.isArchived);
 
       // filter 1: select all conversations or just the ones in the active folder
       const conversationsInFolder = !activeFolder ? conversations
         : conversations.filter(_c => activeFolder.conversationIds.includes(_c.id));
 
-      // filter 1.5: last-activity older than the selected cutoff (via tested helper)
-      const conversationsInAge = filterOlderThanDays === null ? conversationsInFolder
-        : conversationsInFolder.filter(_c => filterOlderThanMatches(_c.updated || _c.created || 0, filterOlderThanDays));
-
-      // filter 2: preparation: lowercase the query
-      const { isSearching, lcTextQuery } = isDrawerSearching(filterByQuery);
+      // filter 1.5: last-activity older than the selected cutoff
+      const ageCutoffMs = filterOlderThanDays === null ? null : Date.now() - filterOlderThanDays * 24 * 60 * 60 * 1000;
+      const conversationsInAge = ageCutoffMs === null ? conversationsInFolder
+        : conversationsInFolder.filter(_c => (_c.updated || _c.created || 0) < ageCutoffMs);
 
       // transform (the conversations into ChatNavigationItemData) + filter2 (if searching)
       const chatNavItems = conversationsInAge
