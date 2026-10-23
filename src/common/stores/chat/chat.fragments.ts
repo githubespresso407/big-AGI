@@ -94,6 +94,7 @@ type _DMessageFragmentWrapper<TFragment, TPart extends { pt: string }> = {
   originId?:
     | 'cha-per-re-um-pre' | 'cha-per-re-um-post' // see DPersona.appChat.DPersonaChatReinforcement
     | 'cha-live-feed-frame' // camera/screen frame attachments, see sampleLiveFeedsAsFragments
+    | 'cha-live-feed-state' // the live feeds' vision state text appended to the user message, not the prompt
     | (string & {}); // optional, for multi-model, identifies which actor produced this fragment
   vendorState?: DMessageFragmentVendorState; // optional vendor-specific protocol state (opaque, lossy-safe)
 }
@@ -434,6 +435,11 @@ export function isDocPart(part: DMessageContentFragment['part'] | DMessageAttach
 
 export function isImageRefPart(part: DMessageContentFragment['part'] | DMessageAttachmentFragment['part']) {
   return part.pt === 'image_ref';
+}
+
+/** An image of either generation: a legacy image ref, or a zync asset reference to an image. */
+export function isImagePart(part: DMessageContentFragment['part'] | DMessageAttachmentFragment['part']): boolean {
+  return isImageRefPart(part) || isZyncAssetImageReferencePart(part);
 }
 
 export function isTextPart(part: DMessageContentFragment['part']) {
@@ -884,27 +890,17 @@ export function isUnstampedFragment(fragment: Immutable<DMessageFragment>): bool
   return !('originId' in fragment && fragment.originId);
 }
 
-export function reorderFragments<T extends DMessageFragment>(unsortedFragments: ReadonlyArray<T>, reorderedIds: DMessageFragmentId[], _placement: 'end'): T[] {
-
-  // quick lookup map
-  const fragmentMap = new Map<DMessageFragmentId, T>();
-  unsortedFragments.forEach(fragment => fragmentMap.set(fragment.fId, fragment));
-
-  // ensure existance in the new order
-  reorderedIds = reorderedIds.filter(id => fragmentMap.has(id));
-
-  // fragments not in the reordering operation
-  const remainingFragments = unsortedFragments.filter(({ fId }) => !reorderedIds.includes(fId));
-
-  // 1. prepend the remaining fragments, 2. then the reordered fragments
-  return [
-    ...remainingFragments,
-    ...reorderedIds.map(id => fragmentMap.get(id)!),
-  ];
+/** Moves only the listed fragments, into the slots they held; the rest keep theirs. A stale list changes nothing. */
+export function reorderFragmentsInSlots<T extends Pick<DMessageFragment, 'fId'>>(fragments: ReadonlyArray<T>, orderedIds: ReadonlyArray<DMessageFragmentId>): ReadonlyArray<T> {
+  const byId = new Map(fragments.map(fragment => [fragment.fId, fragment] as const));
+  const ordered = orderedIds.flatMap(id => byId.get(id) ?? []);
+  if (ordered.length !== orderedIds.length || new Set(orderedIds).size !== orderedIds.length) return fragments;
+  let next = 0;
+  return fragments.map(fragment => orderedIds.includes(fragment.fId) ? ordered[next++] : fragment);
 }
 
 export function splitFragmentsByType(fragments: DMessageFragment[]) {
-  // also see `useFragmentBuckets.ts` which inspired this function
+  // display grouping lives in cmRenderTree.build.ts
   return fragments.reduce((acc, frag) => {
     if (isContentFragment(frag))
       acc.contentFragments.push(frag);
